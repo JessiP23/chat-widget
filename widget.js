@@ -5,7 +5,7 @@
   // On fly.dev (chat-widget.fly.dev): use relative /api/v1 — nginx proxies it to the backend.
   // On localhost with python http.server: hit the backend directly (python can't proxy).
   var _isLocal  = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-  var _backendUrl = 'https://chatbot-dashboard-h719.onrender.com/api/v1';
+  var _backendUrl = 'https://wm-chatbot-api.fly.dev/api/v1';
   var defaultCfg = {
     apiUrl:         _isLocal ? _backendUrl : (location.origin + '/api/v1'),
     primaryColor:   '#6366f1',
@@ -103,7 +103,7 @@
       setStatus('offline');
       if (cb) cb(false);
       cb = null;
-    }, 8000);
+    }, 20000);
 
     try {
       ws = new WebSocket(url);
