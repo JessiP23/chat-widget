@@ -32,8 +32,8 @@
 
     // Build __CHATBOT_CONFIG from URL params so widget.js picks it up.
     window.__CHATBOT_CONFIG = {
-      apiUrl:         params.get('apiUrl')         || 'https://your-backend.com/api/v1',
-      primaryColor:   params.get('primaryColor')   || '#0ea5e9',
+      apiUrl:         params.get('apiUrl')         || (window.location.origin + '/api/v1'),
+      primaryColor:   params.get('primaryColor')   || '#6366f1',
       companyName:    params.get('companyName')     || 'Support',
       welcomeMessage: params.get('welcomeMessage')  || 'Hi! How can I help you today?',
       theme:          params.get('theme')           || 'light',

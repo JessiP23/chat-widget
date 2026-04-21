@@ -1,873 +1,896 @@
-(function() {
+(function () {
   'use strict';
 
-  // ── Defaults ─────────────────────────────────────────────────────────────
-  // Every value here can be overridden via window.__CHATBOT_CONFIG before the
-  // script loads, or by calling ChatbotSDK.init({ ... }) at any time.
-  const defaultCfg = {
-    apiUrl:         'https://chatbot-dashboard-h719.onrender.com/api/v1',
-    primaryColor:   '#0ea5e9',
+  // ── Config ────────────────────────────────────────────────────────────────
+  // Use a relative /api/v1 path by default so the widget always talks to the
+  // same host it was loaded from (nginx proxies it to the real backend).
+  // This avoids CORS entirely — same-origin requests never need preflight.
+  var defaultCfg = {
+    apiUrl:         window.location.origin + '/api/v1',
+    primaryColor:   '#6366f1',
     position:       'bottom-right',
-    welcomeMessage: 'Hello! How can I help you today?',
+    welcomeMessage: 'Hi! How can I help you today?',
     companyName:    'Support',
   };
 
-  // Merge window config immediately — no waiting, no timeout
-  let cfg = Object.assign({}, defaultCfg, window.__CHATBOT_CONFIG || {});
-
-  let API     = cfg.apiUrl;
-  let COLOR   = cfg.primaryColor;
-  let POS     = cfg.position;
-  let WELCOME = cfg.welcomeMessage;
-  let COMPANY = cfg.companyName;
-
-  // tenant_id is optional — the backend can work session-only
-  let TENANT_ID = cfg.tenantId || cfg.tenant_id || null;
+  var cfg       = Object.assign({}, defaultCfg, window.__CHATBOT_CONFIG || {});
+  var API       = cfg.apiUrl;
+  var COLOR     = cfg.primaryColor;
+  var POS       = cfg.position;
+  var WELCOME   = cfg.welcomeMessage;
+  var COMPANY   = cfg.companyName;
+  var TENANT_ID = cfg.tenantId || cfg.tenant_id || null;
 
   // Runtime state
-  const clientId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  let sessionId = null;
-  let ws = null;
-  let wsReconnectDelay = 1000;
-  let isOpen = false;
-  let msgQueue = [];
-  let isConnecting = false;
-  let isDisconnecting = false;
+  var sessionId        = null;
+  var ws               = null;
+  var wsReconnectDelay = 1000;
+  var isOpen           = false;
+  var isConnecting     = false;
+  var isDisconnecting  = false;
+  var wsPingInterval   = null;
+  var inactivityTimer  = null;
+  var streamingMsgs    = {};
+  var msgQueue         = [];
 
-  let container, msgList, inputField, sendBtn;
-  let wsPingInterval = null;
-  let inactivityTimer = null;
-  let chatWindowSize = { width: 380, height: 600 };
+  // DOM refs
+  var container, msgList, inputField, sendBtn, statusDot, statusText;
 
-  // Allow late config via ChatbotSDK.init({ ... }) even after the script loads
-  window.ChatbotSDK = window.ChatbotSDK || {};
-  window.ChatbotSDK.init = function(c) {
-    if (!c) return;
-    cfg = Object.assign(cfg, c);
-    API     = cfg.apiUrl     || API;
-    COLOR   = cfg.primaryColor || COLOR;
-    POS     = cfg.position   || POS;
-    WELCOME = cfg.welcomeMessage || WELCOME;
-    COMPANY = cfg.companyName || COMPANY;
-    TENANT_ID = cfg.tenantId || cfg.tenant_id || TENANT_ID;
+  // ── Public API ─────────────────────────────────────────────────────────────
+  window.ChatbotSDK = {
+    init: function(c) {
+      if (!c) return;
+      cfg       = Object.assign(cfg, c);
+      API       = cfg.apiUrl        || API;
+      COLOR     = cfg.primaryColor  || COLOR;
+      POS       = cfg.position      || POS;
+      WELCOME   = cfg.welcomeMessage || WELCOME;
+      COMPANY   = cfg.companyName   || COMPANY;
+      TENANT_ID = cfg.tenantId || cfg.tenant_id || TENANT_ID;
+    },
+    open:       function() { openChat(); },
+    close:      function() { closeChat(); },
+    toggle:     function() { isOpen ? closeChat() : openChat(); },
+    isOpen:     function() { return isOpen; },
+    getSession: function() { return sessionId; },
   };
 
-  function init() {
-    if (document.getElementById('chatbot-btn')) return;
-
-    // When running inside an iframe (embed.html), open the chat UI directly — the
-    // launcher button lives in the parent page (loader.js).
-    const inIframe = window.parent !== window;
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  function boot() {
+    var inIframe = window.parent !== window;
     if (inIframe) {
-      openChatWindow();
-      return;
+      // Inside embed.html — build UI filling the entire iframe
+      buildUI(true);
+      startSession(function() {
+        if (msgList && msgList.children.length === 0) addMsg('bot', WELCOME);
+      });
+    } else {
+      // Standalone — floating launcher + panel
+      buildLauncher();
     }
-
-    // Standalone mode: render a floating launcher button
-    const btn = document.createElement('div');
-    btn.id = 'chatbot-btn';
-    btn.innerHTML = '💬';
-    btn.style.cssText = `
-      position:fixed;${POS.includes('right') ? 'right:20px' : 'left:20px'};bottom:20px;
-      width:60px;height:60px;border-radius:50%;background:${COLOR};color:#fff;
-      cursor:pointer;display:flex;align-items:center;justify-content:center;
-      box-shadow:0 4px 12px rgba(0,0,0,.15);z-index:9999;font-size:28px;
-      transition:transform .2s;user-select:none;
-    `;
-    btn.onmouseenter = () => btn.style.transform = 'scale(1.1)';
-    btn.onmouseleave = () => btn.style.transform = 'scale(1)';
-    btn.onclick = toggle;
-    document.body.appendChild(btn);
   }
 
-  function initSession() {
-    if (sessionId) return;
-    sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    connectWebSocket();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
   }
 
-  function connectWebSocket() {
-    if (!sessionId || isConnecting) return;
-
-    if (ws) {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
-      ws = null;
+  // ── Session / WebSocket ────────────────────────────────────────────────────
+  function startSession(cb) {
+    if (!sessionId) {
+      sessionId = 'sess_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
     }
+    openWebSocket(cb);
+  }
+
+  function openWebSocket(cb) {
+    if (ws && ws.readyState === WebSocket.OPEN) { if (cb) cb(true); return; }
+    if (ws) { try { ws.close(); } catch(e) {} ws = null; }
+    if (isConnecting) { if (cb) cb(false); return; }
 
     isConnecting = true;
-    const wsUrl = API.replace(/^http/, 'ws');
+    setStatus('connecting');
 
-    // Build query string — only include params that exist
-    const params = new URLSearchParams({ session_id: sessionId });
-    if (TENANT_ID) params.set('tenant_id', TENANT_ID);
+    var base   = API.replace(/^http/, 'ws');
+    var params = 'session_id=' + encodeURIComponent(sessionId);
+    if (TENANT_ID) params += '&tenant_id=' + encodeURIComponent(TENANT_ID);
+    var url = base + '/ws/chat?' + params;
 
-    const url = `${wsUrl}/ws/chat?${params.toString()}`;
+    var giveUp = setTimeout(function() {
+      isConnecting = false;
+      setStatus('offline');
+      if (cb) cb(false);
+      cb = null;
+    }, 8000);
 
     try {
       ws = new WebSocket(url);
-      
-      ws.onopen = () => {
-        isConnecting = false;
+
+      ws.onopen = function() {
+        clearTimeout(giveUp);
+        isConnecting     = false;
         wsReconnectDelay = 1000;
+        setStatus('online');
+        if (wsPingInterval) clearInterval(wsPingInterval);
+        wsPingInterval = setInterval(function() {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+        }, 20000);
+        if (cb) { cb(true); cb = null; }
       };
-      
-      ws.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          
-          if (data.type === 'connected') {
-            clearStatusMessages();
-          }
-          else if (data.type === 'chunk') {
-            handleStreamingChunk(data);
-          }
-          else if (data.type === 'chunk_done') {
-            finalizeStreamingMessage(data.message_id);
-          }
-          else if (data.type === 'chat_message' || data.type === 'bot_response') {
-            removeTypingIndicator();
-            addMessage('bot', data.text || data.message);
-          }
-          else if (data.type === 'staff_message') {
-            removeTypingIndicator();
-            addMessage('staff', data.text || data.message, data.staff_name || 'Agent');
-          }
-          else if (data.type === 'staff_joined') {
-            removeTypingIndicator();
-            handleStaffJoined(data);
-          }
-          else if (data.type === 'staff_left') {
-            removeTypingIndicator();
-            addSystemMessage(`ℹ️ ${data.message || 'Agent has left. I\'m back to assist you!'}`);
-          }
-          else if (data.type === 'closure_prompt') {
-            removeTypingIndicator();
-            handleClosurePrompt(data);
-          }
-          else if (data.type === 'error') {
-            removeTypingIndicator();
-            console.error('[Chatbot] Server error:', data.message);
-            addMessage('bot', data.message || 'Sorry, something went wrong.');
-          }
-        } catch (err) {
-          console.error('[Chatbot] WS parse error:', err);
-        }
+
+      ws.onmessage = function(e) {
+        try { handleWsMsg(JSON.parse(e.data)); }
+        catch(err) { console.error('[Chatbot] WS parse error', err); }
       };
-      
-      ws.onerror = (err) => {
+
+      ws.onerror = function(err) {
+        clearTimeout(giveUp);
         console.error('[Chatbot] WS error:', err);
         isConnecting = false;
+        setStatus('offline');
+        if (cb) { cb(false); cb = null; }
       };
-      
-      ws.onclose = () => {
+
+      ws.onclose = function() {
         isConnecting = false;
         ws = null;
-        
+        if (wsPingInterval) { clearInterval(wsPingInterval); wsPingInterval = null; }
         if (!isDisconnecting && isOpen && sessionId) {
+          setStatus('connecting');
           wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
-          setTimeout(connectWebSocket, wsReconnectDelay);
+          setTimeout(function() { openWebSocket(null); }, wsReconnectDelay);
         } else {
-          isOpen = false;
-          sessionId = null;
+          setStatus('offline');
         }
       };
-
-      if (wsPingInterval) clearInterval(wsPingInterval);
-      wsPingInterval = setInterval(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-      }, 20000);
-      
-    } catch (err) {
+    } catch(err) {
+      clearTimeout(giveUp);
+      isConnecting = false;
+      setStatus('offline');
       console.error('[Chatbot] WS connect failed:', err);
+      if (cb) { cb(false); cb = null; }
     }
   }
 
-  function toggle() {
-    isOpen ? closeChatWindow() : openChatWindow();
+  function handleWsMsg(data) {
+    switch (data.type) {
+      case 'connected':
+        clearStatusMsgs(); break;
+      case 'chunk':
+        handleChunk(data); break;
+      case 'chunk_done':
+        finalizeChunk(data.message_id); break;
+      case 'chat_message':
+      case 'bot_response':
+        removeTyping(); addMsg('bot', data.text || data.message); break;
+      case 'staff_message':
+        removeTyping(); addMsg('staff', data.text || data.message, data.staff_name || 'Agent'); break;
+      case 'staff_joined':
+        removeTyping(); handleStaffJoined(data); break;
+      case 'staff_left':
+        removeTyping(); addSysMsg('\u2139\ufe0f ' + (data.message || 'Agent has left the chat.')); break;
+      case 'closure_prompt':
+        removeTyping(); showClosurePrompt(data); break;
+      case 'error':
+        removeTyping(); addMsg('bot', data.message || 'Something went wrong. Please try again.'); break;
+    }
   }
 
-  async function openChatWindow() {
-    if (!container) createChatUI();
-    
-    if (!sessionId) {
-      showStatusMessage('Connecting...');
-      try {
-        await initSession();
-        clearStatusMessages();
-      } catch (err) {
-        clearStatusMessages();
-        showStatusMessage('⚠️ Connection failed. Please refresh the page.');
-        return;
-      }
-    }
-    
+  // ── Launcher (standalone) ──────────────────────────────────────────────────
+  function buildLauncher() {
+    if (document.getElementById('cb-launcher')) return;
+    var btn    = document.createElement('button');
+    btn.id     = 'cb-launcher';
+    var side   = POS.includes('right') ? 'right:24px' : 'left:24px';
+    btn.setAttribute('style',
+      'all:initial;position:fixed;' + side + ';bottom:24px;' +
+      'width:60px;height:60px;border-radius:50%;' +
+      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
+      'color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;' +
+      'box-shadow:0 4px 20px rgba(0,0,0,.28);z-index:2147483646;border:none;' +
+      'transition:transform .2s,box-shadow .2s;font-family:sans-serif;');
+    btn.innerHTML = iconChat();
+    btn.setAttribute('aria-label', 'Open chat');
+    btn.addEventListener('mouseenter', function() {
+      btn.style.transform = 'scale(1.1)';
+      btn.style.boxShadow = '0 8px 32px rgba(0,0,0,.35)';
+    });
+    btn.addEventListener('mouseleave', function() {
+      btn.style.transform = 'scale(1)';
+      btn.style.boxShadow = '0 4px 20px rgba(0,0,0,.28)';
+    });
+    btn.addEventListener('click', toggleChat);
+    document.body.appendChild(btn);
+  }
+
+  function toggleChat() { isOpen ? closeChat() : openChat(); }
+
+  // ── Open / close ───────────────────────────────────────────────────────────
+  function openChat() {
+    if (!container) buildUI(false);
     container.style.display = 'flex';
+    requestAnimationFrame(function() {
+      container.style.opacity   = '0';
+      container.style.transform = 'translateY(16px) scale(.97)';
+      requestAnimationFrame(function() {
+        container.style.transition = 'opacity .24s ease,transform .24s ease';
+        container.style.opacity    = '1';
+        container.style.transform  = 'translateY(0) scale(1)';
+      });
+    });
     isOpen = true;
-    
-    if (msgList.children.length === 0) {
-      addMessage('bot', WELCOME);
+    updateLauncherIcon(true);
+
+    if (!sessionId) {
+      showStatusMsg('Connecting\u2026');
+      startSession(function(ok) {
+        clearStatusMsgs();
+        if (!ok) showStatusMsg('\u26a0\ufe0f Could not connect. Please refresh.');
+        else if (msgList && msgList.querySelectorAll('.cb-msg-row').length === 0) addMsg('bot', WELCOME);
+      });
+    } else {
+      if (msgList && msgList.querySelectorAll('.cb-msg-row').length === 0) addMsg('bot', WELCOME);
     }
-    
-    setTimeout(() => inputField?.focus(), 100);
+
+    setTimeout(function() { if (inputField) inputField.focus(); }, 120);
   }
 
-  function closeChatWindow() {
-    if (container) container.style.display = 'none';
+  function closeChat() {
+    if (!container) return;
+    container.style.opacity   = '0';
+    container.style.transform = 'translateY(16px) scale(.97)';
+    setTimeout(function() { if (container) container.style.display = 'none'; }, 250);
     isOpen = false;
-    // Notify parent frame (loader.js) so it can toggle its launcher icon
-    if (window.parent && window.parent !== window) {
-      window.parent.postMessage({ type: 'chatbot:close' }, '*');
-    }
+    updateLauncherIcon(false);
+    if (window.parent !== window) window.parent.postMessage({ type: 'chatbot:close' }, '*');
   }
 
-  function createChatUI() {
-    container = document.createElement('div');
-    container.id = 'chatbot-window';
-    container.style.cssText = `
-      position:fixed;${POS.includes('right') ? 'right:20px' : 'left:20px'};bottom:90px;
-      width:${chatWindowSize.width}px;height:${chatWindowSize.height}px;
-      max-height:calc(100vh - 120px);min-width:300px;min-height:400px;
-      background:#fff;border-radius:16px;box-shadow:0 8px 24px rgba(0,0,0,.15);
-      display:none;flex-direction:column;z-index:9998;overflow:hidden;
-      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    `;
+  function updateLauncherIcon(open) {
+    var btn = document.getElementById('cb-launcher');
+    if (!btn) return;
+    btn.innerHTML = open ? iconClose() : iconChat();
+  }
 
-    const header = document.createElement('div');
-    header.style.cssText = `
-      padding:20px;background:${COLOR};color:#fff;border-radius:16px 16px 0 0;
-      display:flex;justify-content:space-between;align-items:center;cursor:move;
-      user-select:none;
-    `;
-    header.innerHTML = `
-      <div>
-        <div style="font-weight:600;font-size:16px">${COMPANY}</div>
-        <div style="font-size:12px;opacity:.9">Online</div>
-      </div>
-      <button id="cb-close" style="background:none;border:none;color:#fff;
-        font-size:24px;cursor:pointer;width:30px;height:30px;padding:0">×</button>
-    `;
+  // ── Build UI ───────────────────────────────────────────────────────────────
+  function buildUI(iframeMode) {
+    injectStyles();
 
-    let isDraggingWindow = false;
-    let windowDragOffset = { x: 0, y: 0 };
-    
-    header.addEventListener('mousedown', (e) => {
-      if (e.target.id === 'cb-close') return;
-      isDraggingWindow = true;
-      const rect = container.getBoundingClientRect();
-      windowDragOffset.x = e.clientX - rect.left;
-      windowDragOffset.y = e.clientY - rect.top;
-      e.preventDefault();
-    });
-    
-    document.addEventListener('mousemove', (e) => {
-      if (!isDraggingWindow) return;
-      
-      const x = e.clientX - windowDragOffset.x;
-      const y = e.clientY - windowDragOffset.y;
-      
-      const maxX = window.innerWidth - container.offsetWidth;
-      const maxY = window.innerHeight - container.offsetHeight;
-      
-      const finalX = Math.max(0, Math.min(x, maxX));
-      const finalY = Math.max(0, Math.min(y, maxY));
-      
-      container.style.left = finalX + 'px';
-      container.style.top = finalY + 'px';
-      container.style.right = 'auto';
-      container.style.bottom = 'auto';
-    });
-    
-    document.addEventListener('mouseup', () => {
-      isDraggingWindow = false;
-    });
+    container    = document.createElement('div');
+    container.id = 'cb-root';
 
-    msgList = document.createElement('div');
-    msgList.style.cssText = `
-      flex:1;overflow-y:auto;padding:20px;
-      display:flex;flex-direction:column;gap:12px;
-    `;
+    if (iframeMode) {
+      // Fill the entire iframe — no offsets
+      container.style.cssText =
+        'position:fixed;top:0;left:0;right:0;bottom:0;' +
+        'display:flex;flex-direction:column;' +
+        'background:#f1f5f9;overflow:hidden;' +
+        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,sans-serif;';
+    } else {
+      var side = POS.includes('right') ? 'right:24px' : 'left:24px';
+      container.style.cssText =
+        'position:fixed;' + side + ';bottom:96px;' +
+        'width:370px;height:580px;max-height:calc(100vh - 120px);' +
+        'display:none;flex-direction:column;' +
+        'background:#f1f5f9;border-radius:20px;' +
+        'box-shadow:0 24px 60px rgba(0,0,0,.22),0 0 0 1px rgba(0,0,0,.07);' +
+        'z-index:2147483645;overflow:hidden;' +
+        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,sans-serif;';
+    }
 
-    const inputArea = document.createElement('div');
-    inputArea.style.cssText = `
-      padding:20px;border-top:1px solid #e5e7eb;
-      display:flex;gap:10px;align-items:center;
-    `;
+    // ── Header ───────────────────────────────────────────────────────────────
+    var header = document.createElement('div');
+    header.style.cssText =
+      'padding:14px 16px;flex-shrink:0;position:relative;overflow:hidden;' +
+      'background:linear-gradient(135deg,' + COLOR + ' 0%,' + darken(COLOR,50) + ' 100%);' +
+      'display:flex;align-items:center;gap:12px;';
+    if (!iframeMode) {
+      header.style.cursor = 'move';
+      makeDraggable(header, container);
+    }
+
+    // Decorative circles
+    var d1 = document.createElement('div');
+    d1.style.cssText = 'position:absolute;top:-28px;right:-28px;width:110px;height:110px;border-radius:50%;background:rgba(255,255,255,.08);pointer-events:none;';
+    var d2 = document.createElement('div');
+    d2.style.cssText = 'position:absolute;bottom:-40px;left:30px;width:90px;height:90px;border-radius:50%;background:rgba(255,255,255,.06);pointer-events:none;';
+    header.appendChild(d1);
+    header.appendChild(d2);
+
+    var botAv = document.createElement('div');
+    botAv.style.cssText =
+      'width:42px;height:42px;border-radius:50%;flex-shrink:0;z-index:1;' +
+      'background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.35);' +
+      'display:flex;align-items:center;justify-content:center;font-size:20px;';
+    botAv.textContent = '\uD83E\uDD16';
+
+    var info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0;z-index:1;';
+
+    var nameEl = document.createElement('div');
+    nameEl.style.cssText = 'font-weight:700;font-size:15px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    nameEl.textContent = COMPANY;
+
+    var statusRow = document.createElement('div');
+    statusRow.style.cssText = 'display:flex;align-items:center;gap:5px;margin-top:2px;';
+    statusDot  = document.createElement('span');
+    statusText = document.createElement('span');
+    statusDot.style.cssText  = 'width:7px;height:7px;border-radius:50%;background:#34d399;display:inline-block;flex-shrink:0;transition:background .3s;';
+    statusText.style.cssText = 'font-size:11.5px;color:rgba(255,255,255,.85);font-weight:500;';
+    statusText.textContent   = 'Online';
+    statusRow.appendChild(statusDot);
+    statusRow.appendChild(statusText);
+    info.appendChild(nameEl);
+    info.appendChild(statusRow);
+
+    var closeBtn = document.createElement('button');
+    closeBtn.setAttribute('aria-label', 'Close');
+    closeBtn.style.cssText =
+      'all:initial;width:32px;height:32px;border-radius:50%;z-index:1;flex-shrink:0;' +
+      'background:rgba(255,255,255,.15);color:#fff;cursor:pointer;border:none;' +
+      'display:flex;align-items:center;justify-content:center;font-size:20px;line-height:1;' +
+      'transition:background .15s;font-family:sans-serif;';
+    closeBtn.innerHTML = '&times;';
+    closeBtn.addEventListener('mouseenter', function() { closeBtn.style.background = 'rgba(255,255,255,.28)'; });
+    closeBtn.addEventListener('mouseleave', function() { closeBtn.style.background = 'rgba(255,255,255,.15)'; });
+    closeBtn.addEventListener('click', iframeMode
+      ? function() { window.parent.postMessage({ type: 'chatbot:close' }, '*'); }
+      : closeChat);
+
+    header.appendChild(botAv);
+    header.appendChild(info);
+    header.appendChild(closeBtn);
+
+    // ── Message area ──────────────────────────────────────────────────────────
+    msgList    = document.createElement('div');
+    msgList.id = 'cb-msgs';
+    msgList.style.cssText =
+      'flex:1;overflow-y:auto;padding:14px 12px;' +
+      'display:flex;flex-direction:column;gap:4px;scroll-behavior:smooth;';
+
+    // Date divider
+    var today     = new Date().toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric' });
+    var divider   = document.createElement('div');
+    divider.style.cssText = 'display:flex;align-items:center;gap:10px;margin:0 0 10px;';
+    var l1 = document.createElement('div'); l1.style.cssText = 'flex:1;height:1px;background:#e2e8f0;';
+    var dl = document.createElement('span'); dl.style.cssText = 'font-size:11px;color:#94a3b8;white-space:nowrap;font-weight:500;'; dl.textContent = today;
+    var l2 = document.createElement('div'); l2.style.cssText = 'flex:1;height:1px;background:#e2e8f0;';
+    divider.appendChild(l1); divider.appendChild(dl); divider.appendChild(l2);
+    msgList.appendChild(divider);
+
+    // ── Input area ────────────────────────────────────────────────────────────
+    var inputArea = document.createElement('div');
+    inputArea.style.cssText =
+      'padding:10px 12px 14px;background:#fff;border-top:1px solid #e8ecf0;flex-shrink:0;';
+
+    var inputWrap = document.createElement('div');
+    inputWrap.style.cssText =
+      'display:flex;align-items:center;gap:8px;' +
+      'background:#f8fafc;border-radius:26px;padding:7px 7px 7px 16px;' +
+      'border:2px solid #e2e8f0;transition:border-color .2s;';
 
     inputField = document.createElement('input');
-    inputField.type = 'text';
-    inputField.placeholder = 'Type your message...';
+    inputField.type         = 'text';
+    inputField.placeholder  = 'Type a message\u2026';
     inputField.autocomplete = 'off';
-    inputField.style.cssText = `
-      flex:1;padding:12px 16px;border:1px solid #e5e7eb;border-radius:24px;
-      outline:none;font-size:14px;box-sizing:border-box;
-    `;
-    inputField.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
-      }
+    inputField.style.cssText =
+      'flex:1;border:none;background:transparent;outline:none;' +
+      'font-size:14px;color:#1e293b;font-family:inherit;min-width:0;';
+    inputField.addEventListener('focus', function() { inputWrap.style.borderColor = COLOR; });
+    inputField.addEventListener('blur',  function() { inputWrap.style.borderColor = '#e2e8f0'; });
+    inputField.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
     });
 
     sendBtn = document.createElement('button');
-    sendBtn.textContent = 'Send';
-    sendBtn.style.cssText = `
-      padding:12px 24px;background:${COLOR};color:#fff;border:none;
-      border-radius:24px;cursor:pointer;font-weight:600;font-size:14px;
-      transition:opacity .2s;
-    `;
-    sendBtn.onmouseenter = () => sendBtn.style.opacity = '0.9';
-    sendBtn.onmouseleave = () => sendBtn.style.opacity = '1';
-    sendBtn.onclick = sendMessage;
+    sendBtn.setAttribute('aria-label', 'Send');
+    sendBtn.style.cssText =
+      'all:initial;width:36px;height:36px;border-radius:50%;flex-shrink:0;' +
+      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
+      'color:#fff;cursor:pointer;border:none;' +
+      'display:flex;align-items:center;justify-content:center;' +
+      'transition:transform .15s,opacity .15s;' +
+      'box-shadow:0 2px 10px ' + rgba(COLOR,.38) + ';font-family:sans-serif;';
+    sendBtn.innerHTML = iconSend();
+    sendBtn.addEventListener('mouseenter', function() { sendBtn.style.transform = 'scale(1.1)'; });
+    sendBtn.addEventListener('mouseleave', function() { sendBtn.style.transform = 'scale(1)'; });
+    sendBtn.addEventListener('click', doSend);
 
-    inputArea.appendChild(inputField);
-    inputArea.appendChild(sendBtn);
+    inputWrap.appendChild(inputField);
+    inputWrap.appendChild(sendBtn);
+
+    var powered = document.createElement('div');
+    powered.style.cssText = 'text-align:center;font-size:10px;color:#b0bec5;padding-top:6px;font-family:inherit;letter-spacing:.03em;';
+    powered.textContent = '\u2736 Powered by WM Studio';
+
+    inputArea.appendChild(inputWrap);
+    inputArea.appendChild(powered);
+
     container.appendChild(header);
     container.appendChild(msgList);
     container.appendChild(inputArea);
-
-    createResizeHandles(container);
-    
     document.body.appendChild(container);
-
-    document.getElementById('cb-close').onclick = closeChatWindow;
-    
-    startInactivityTimer();
   }
 
-  function createResizeHandles(container) {
-    const handles = [
-      { name: 'n', cursor: 'ns-resize', style: 'top:0;left:0;right:0;height:5px;' },
-      { name: 's', cursor: 'ns-resize', style: 'bottom:0;left:0;right:0;height:5px;' },
-      { name: 'e', cursor: 'ew-resize', style: 'top:0;right:0;bottom:0;width:5px;' },
-      { name: 'w', cursor: 'ew-resize', style: 'top:0;left:0;bottom:0;width:5px;' },
-      { name: 'ne', cursor: 'nesw-resize', style: 'top:0;right:0;width:10px;height:10px;' },
-      { name: 'nw', cursor: 'nwse-resize', style: 'top:0;left:0;width:10px;height:10px;' },
-      { name: 'se', cursor: 'nwse-resize', style: 'bottom:0;right:0;width:10px;height:10px;' },
-      { name: 'sw', cursor: 'nesw-resize', style: 'bottom:0;left:0;width:10px;height:10px;' }
-    ];
+  // ── Draggable (standalone) ─────────────────────────────────────────────────
+  function makeDraggable(handle, el) {
+    var ox = 0, oy = 0, drag = false;
+    handle.addEventListener('mousedown', function(e) {
+      if (e.target.closest && e.target.closest('button')) return;
+      drag = true;
+      var r = el.getBoundingClientRect();
+      ox = e.clientX - r.left; oy = e.clientY - r.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function(e) {
+      if (!drag) return;
+      el.style.left   = Math.max(0, Math.min(e.clientX - ox, window.innerWidth  - el.offsetWidth))  + 'px';
+      el.style.top    = Math.max(0, Math.min(e.clientY - oy, window.innerHeight - el.offsetHeight)) + 'px';
+      el.style.right  = 'auto'; el.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', function() { drag = false; });
+  }
 
-    handles.forEach(({ name, cursor, style }) => {
-      const handle = document.createElement('div');
-      handle.className = `resize-handle-${name}`;
-      handle.style.cssText = `position:absolute;${style}cursor:${cursor};z-index:10;`;
-      
-      handle.addEventListener('mousedown', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        startResize(e, name, container);
+  // ── Status ─────────────────────────────────────────────────────────────────
+  function setStatus(state) {
+    if (!statusDot || !statusText) return;
+    if (state === 'online') {
+      statusDot.style.background = '#34d399'; statusText.textContent = 'Online';
+    } else if (state === 'connecting') {
+      statusDot.style.background = '#fbbf24'; statusText.textContent = 'Connecting\u2026';
+    } else {
+      statusDot.style.background = '#f87171'; statusText.textContent = 'Offline';
+    }
+  }
+
+  // ── Messages ───────────────────────────────────────────────────────────────
+  function addMsg(who, text, staffName) {
+    if (!msgList) return;
+    msgQueue.push({ who: who, text: text, time: Date.now() });
+    if (msgQueue.length > 100) msgQueue.shift();
+
+    var isUser  = who === 'user';
+    var isStaff = who === 'staff';
+    var time    = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+
+    var row = document.createElement('div');
+    row.className    = 'cb-msg-row';
+    row.style.cssText =
+      'display:flex;flex-direction:' + (isUser ? 'row-reverse' : 'row') + ';' +
+      'align-items:flex-end;gap:8px;' +
+      'margin:' + (isUser ? '4px 0 2px' : '2px 0 4px') + ';' +
+      'animation:cb-in .22s ease;';
+
+    if (!isUser) {
+      var av = document.createElement('div');
+      av.style.cssText =
+        'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
+        'display:flex;align-items:center;justify-content:center;font-size:14px;' +
+        'background:' + (isStaff ? 'linear-gradient(135deg,#10b981,#059669)' : 'linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ')') + ';' +
+        'color:#fff;font-weight:700;border:2px solid #fff;' +
+        'box-shadow:0 2px 8px rgba(0,0,0,.1);';
+      av.textContent = isStaff ? (staffName || 'A')[0].toUpperCase() : '\uD83E\uDD16';
+      row.appendChild(av);
+    }
+
+    var col = document.createElement('div');
+    col.style.cssText = 'display:flex;flex-direction:column;max-width:72%;' + (isUser ? 'align-items:flex-end' : 'align-items:flex-start');
+
+    if (isStaff && staffName) {
+      var nm = document.createElement('div');
+      nm.textContent   = staffName;
+      nm.style.cssText = 'font-size:11px;color:#6b7280;margin-bottom:3px;font-weight:600;';
+      col.appendChild(nm);
+    }
+
+    var bubble = document.createElement('div');
+    if (isUser) {
+      bubble.style.cssText =
+        'padding:10px 14px;border-radius:18px 18px 4px 18px;' +
+        'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
+        'color:#fff;font-size:14px;line-height:1.55;word-break:break-word;' +
+        'box-shadow:0 2px 10px ' + rgba(COLOR,.32) + ';';
+      bubble.textContent = text;
+    } else {
+      bubble.style.cssText =
+        'padding:10px 14px;' +
+        'border-radius:' + (isStaff ? '18px 18px 18px 4px' : '4px 18px 18px 18px') + ';' +
+        'background:' + (isStaff ? '#f0fdf4' : '#fff') + ';' +
+        'color:#1e293b;font-size:14px;line-height:1.55;word-break:break-word;' +
+        'box-shadow:0 1px 6px rgba(0,0,0,.07);' +
+        'border:1px solid ' + (isStaff ? '#a7f3d0' : '#e8ecf0') + ';';
+      bubble.innerHTML = parseMarkdown(text);
+      applyMdStyles(bubble);
+    }
+
+    var ts = document.createElement('div');
+    ts.textContent   = time;
+    ts.style.cssText = 'font-size:10px;color:#94a3b8;margin-top:3px;padding:0 2px;';
+
+    col.appendChild(bubble);
+    col.appendChild(ts);
+    row.appendChild(col);
+    msgList.appendChild(row);
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  function addSysMsg(text) {
+    if (!msgList) return;
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;justify-content:center;margin:6px 0;';
+    var pill = document.createElement('div');
+    pill.style.cssText = 'font-size:11.5px;color:#64748b;background:rgba(148,163,184,.12);border-radius:999px;padding:4px 12px;border:1px solid rgba(148,163,184,.2);';
+    pill.textContent = text;
+    wrap.appendChild(pill);
+    msgList.appendChild(wrap);
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  // ── Typing indicator ───────────────────────────────────────────────────────
+  function showTyping() {
+    if (!msgList || document.getElementById('cb-typing')) return;
+    var row = document.createElement('div');
+    row.id = 'cb-typing';
+    row.style.cssText = 'display:flex;align-items:flex-end;gap:8px;margin:2px 0 6px;animation:cb-in .22s ease;';
+
+    var av = document.createElement('div');
+    av.style.cssText =
+      'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
+      'display:flex;align-items:center;justify-content:center;font-size:14px;' +
+      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
+      'color:#fff;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.1);';
+    av.textContent = '\uD83E\uDD16';
+
+    var bubble = document.createElement('div');
+    bubble.style.cssText =
+      'padding:11px 15px;border-radius:4px 18px 18px 18px;' +
+      'background:#fff;border:1px solid #e8ecf0;' +
+      'box-shadow:0 1px 6px rgba(0,0,0,.07);' +
+      'display:flex;align-items:center;gap:5px;';
+
+    for (var i = 0; i < 3; i++) {
+      var dot = document.createElement('span');
+      dot.style.cssText =
+        'width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;' +
+        'animation:cb-bounce 1.2s ' + (i * .18) + 's infinite ease-in-out;';
+      bubble.appendChild(dot);
+    }
+    row.appendChild(av);
+    row.appendChild(bubble);
+    msgList.appendChild(row);
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  function removeTyping() {
+    var el = document.getElementById('cb-typing');
+    if (el) el.parentNode.removeChild(el);
+  }
+
+  // ── Status messages ────────────────────────────────────────────────────────
+  function showStatusMsg(text) {
+    if (!msgList) return;
+    var d = document.createElement('div');
+    d.className     = 'cb-status';
+    d.textContent   = text;
+    d.style.cssText = 'text-align:center;color:#94a3b8;padding:14px;font-size:13px;font-style:italic;';
+    msgList.appendChild(d);
+  }
+
+  function clearStatusMsgs() {
+    if (!msgList) return;
+    var els = msgList.querySelectorAll('.cb-status');
+    for (var i = 0; i < els.length; i++) els[i].parentNode.removeChild(els[i]);
+  }
+
+  // ── Send ───────────────────────────────────────────────────────────────────
+  function doSend() {
+    var text = inputField && inputField.value && inputField.value.trim();
+    if (!text) return;
+    inputField.value = '';
+    inputField.focus();
+    resetInactivity();
+    addMsg('user', text);
+    showTyping();
+    setSendDisabled(true);
+
+    if (!sessionId) {
+      startSession(function(ok) {
+        if (ok) { trySend(text); }
+        else {
+          removeTyping();
+          addMsg('bot', '\u26a0\ufe0f Could not connect. Please check your internet connection and try again.');
+          setSendDisabled(false);
+        }
       });
-      
-      container.appendChild(handle);
+    } else {
+      trySend(text);
+    }
+  }
+
+  function trySend(text) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'chat_message', text: text, session_id: sessionId, tenant_id: TENANT_ID }));
+      setSendDisabled(false);
+    } else {
+      // WS not ready — try REST fallback
+      sendREST(text);
+    }
+  }
+
+  function setSendDisabled(v) {
+    if (!sendBtn) return;
+    sendBtn.style.opacity = v ? '.45' : '1';
+    sendBtn.style.cursor  = v ? 'not-allowed' : 'pointer';
+  }
+
+  function sendREST(text) {
+    fetch(API + '/conversations', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tenant_id: TENANT_ID, session_id: sessionId, user_message: text }),
+    })
+    .then(function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    })
+    .then(function(data) {
+      var msg = data.bot_response || data.text || data.message || "I didn\u2019t quite catch that. Could you rephrase?";
+      removeTyping();
+      addMsg('bot', msg);
+    })
+    .catch(function(err) {
+      console.error('[Chatbot] REST error:', err);
+      removeTyping();
+      addMsg('bot', '\u26a0\ufe0f Unable to reach the server. Please try again.');
+    })
+    .finally(function() {
+      setSendDisabled(false);
     });
   }
 
-  function startResize(e, direction, container) {
-    isResizing = true;
-    const startX = e.clientX;
-    const startY = e.clientY;
-    const startWidth = container.offsetWidth;
-    const startHeight = container.offsetHeight;
-    const startLeft = container.offsetLeft;
-    const startTop = container.offsetTop;
+  // ── Streaming chunks ───────────────────────────────────────────────────────
+  function handleChunk(data) {
+    var mid = data.message_id;
+    if (!streamingMsgs[mid]) {
+      removeTyping();
+      var row = document.createElement('div');
+      row.id = 'cb-stream-' + mid;
+      row.style.cssText = 'display:flex;flex-direction:row;align-items:flex-end;gap:8px;margin:2px 0 6px;animation:cb-in .22s ease;';
 
-    const onMouseMove = (e) => {
-      if (!isResizing) return;
+      var av = document.createElement('div');
+      av.style.cssText =
+        'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
+        'display:flex;align-items:center;justify-content:center;font-size:14px;' +
+        'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
+        'color:#fff;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.1);';
+      av.textContent = '\uD83E\uDD16';
 
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
+      var bubble = document.createElement('div');
+      bubble.style.cssText =
+        'padding:10px 14px;border-radius:4px 18px 18px 18px;max-width:72%;' +
+        'background:#fff;color:#1e293b;font-size:14px;line-height:1.55;word-break:break-word;' +
+        'box-shadow:0 1px 6px rgba(0,0,0,.07);border:1px solid #e8ecf0;';
 
-      let newWidth = startWidth;
-      let newHeight = startHeight;
-      let newLeft = startLeft;
-      let newTop = startTop;
-
-      if (direction.includes('e')) {
-        newWidth = Math.max(300, startWidth + dx);
-      } else if (direction.includes('w')) {
-        newWidth = Math.max(300, startWidth - dx);
-        newLeft = startLeft + (startWidth - newWidth);
-      }
-
-      if (direction.includes('s')) {
-        newHeight = Math.max(400, startHeight + dy);
-      } else if (direction.includes('n')) {
-        newHeight = Math.max(400, startHeight - dy);
-        newTop = startTop + (startHeight - newHeight);
-      }
-
-      newWidth = Math.min(newWidth, window.innerWidth - 40);
-      newHeight = Math.min(newHeight, window.innerHeight - 120);
-
-      container.style.width = newWidth + 'px';
-      container.style.height = newHeight + 'px';
-      
-      if (direction.includes('w') || direction.includes('n')) {
-        container.style.left = newLeft + 'px';
-        container.style.top = newTop + 'px';
-        container.style.right = 'auto';
-        container.style.bottom = 'auto';
-      }
-
-      chatWindowSize.width = newWidth;
-      chatWindowSize.height = newHeight;
-    };
-
-    const onMouseUp = () => {
-      isResizing = false;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
+      row.appendChild(av);
+      row.appendChild(bubble);
+      msgList.appendChild(row);
+      streamingMsgs[mid] = { bubble: bubble, text: '' };
+    }
+    var s = streamingMsgs[mid];
+    s.text += data.text;
+    s.bubble.innerHTML = parseMarkdown(s.text);
+    applyMdStyles(s.bubble);
+    msgList.scrollTop = msgList.scrollHeight;
   }
 
-  function startInactivityTimer() {
+  function finalizeChunk(mid) {
+    var s = streamingMsgs[mid];
+    if (s) { msgQueue.push({ who: 'bot', text: s.text, time: Date.now() }); delete streamingMsgs[mid]; }
+    setSendDisabled(false);
+  }
+
+  // ── Staff ──────────────────────────────────────────────────────────────────
+  function handleStaffJoined(data) {
+    var name = data.staff_name || 'Agent';
+    addSysMsg('\uD83D\uDD04 ' + name + ' is connecting\u2026');
+    setTimeout(function() {
+      var msgs = msgList.querySelectorAll('div');
+      for (var i = 0; i < msgs.length; i++) {
+        if (msgs[i].textContent.indexOf('is connecting') !== -1) {
+          var par = msgs[i].parentNode;
+          if (par) par.parentNode && par.parentNode.removeChild(par);
+        }
+      }
+      addSysMsg('\u2705 ' + (data.message || (name + ' has joined')));
+      setTimeout(showTyping, 500);
+    }, 900);
+  }
+
+  // ── Closure prompt ─────────────────────────────────────────────────────────
+  function showClosurePrompt(data) {
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:flex-end;gap:8px;margin:4px 0;animation:cb-in .22s ease;';
+
+    var av = document.createElement('div');
+    av.style.cssText =
+      'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
+      'display:flex;align-items:center;justify-content:center;font-size:14px;' +
+      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
+      'color:#fff;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.1);';
+    av.textContent = '\uD83E\uDD16';
+
+    var bubble = document.createElement('div');
+    bubble.style.cssText =
+      'padding:12px 14px;border-radius:4px 18px 18px 18px;max-width:72%;' +
+      'background:#fff;border:1px solid #e8ecf0;font-size:14px;color:#1e293b;';
+
+    var msg = document.createElement('div');
+    msg.textContent      = data.message;
+    msg.style.marginBottom = '10px';
+    bubble.appendChild(msg);
+
+    var btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+    var options = data.options || [];
+    options.forEach(function(opt) {
+      var b = document.createElement('button');
+      b.textContent   = opt.text;
+      b.style.cssText =
+        'all:initial;padding:6px 16px;border-radius:999px;font-family:inherit;' +
+        'border:2px solid ' + COLOR + ';color:' + COLOR + ';font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;';
+      b.addEventListener('mouseenter', function() { b.style.background = COLOR; b.style.color = '#fff'; });
+      b.addEventListener('mouseleave', function() { b.style.background = 'transparent'; b.style.color = COLOR; });
+      b.addEventListener('click', function() { handleClosureChoice(opt.id, btns); });
+      btns.appendChild(b);
+    });
+    bubble.appendChild(btns);
+    row.appendChild(av);
+    row.appendChild(bubble);
+    msgList.appendChild(row);
+    msgList.scrollTop = msgList.scrollHeight;
+  }
+
+  function handleClosureChoice(choice, btnsEl) {
+    var bbs = btnsEl.querySelectorAll('button');
+    for (var i = 0; i < bbs.length; i++) {
+      bbs[i].disabled = true; bbs[i].style.opacity = '.45'; bbs[i].style.cursor = 'not-allowed';
+    }
+    if (choice === 'continue') {
+      addMsg('bot', 'Great! How else can I help you? \uD83D\uDE0A');
+      resetInactivity();
+    } else {
+      addMsg('bot', 'Thanks for chatting! Come back any time. \uD83D\uDC4B');
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        isDisconnecting = true;
+        ws.send(JSON.stringify({ type: 'disconnect', session_id: sessionId, tenant_id: TENANT_ID, reason: 'user_ended_chat' }));
+      }
+      setTimeout(closeChat, 2200);
+    }
+  }
+
+  // ── Inactivity ─────────────────────────────────────────────────────────────
+  function resetInactivity() {
     if (inactivityTimer) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(() => {
-      handleClosurePrompt({ message: 'Are you still there?', options: [{id:'continue',text:'Continue'},{id:'end',text:'End'}] });
+    inactivityTimer = setTimeout(function() {
+      showClosurePrompt({
+        message: 'Are you still there?',
+        options: [{ id:'continue', text:'Continue' }, { id:'end', text:'End chat' }]
+      });
     }, 450000);
   }
 
-  async function sendMessage() {
-    const text = inputField?.value?.trim();
-    if (!text) return;
-
-    inputField.value = '';
-    inputField.focus();
-    startInactivityTimer();
-    
-    addMessage('user', text);
-    
-
-    showTypingIndicator();
-
-    if (ws?.readyState === WebSocket.OPEN) {
-      const payload = {
-        type: 'chat_message',
-        text,
-        session_id: sessionId,
-        tenant_id: TENANT_ID
-      };
-      ws.send(JSON.stringify(payload));
-    } else {
-      console.log('[Chatbot] WebSocket not open, using REST API');
-      await sendViaREST(text);
-    }
-  }
-
-  async function sendViaREST(text) {
-    try {
-      const res = await fetch(`${API}/conversations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tenant_id: TENANT_ID,
-          session_id: sessionId,
-          user_message: text,
-        }),
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
-      const botMsg = data.bot_response || data.text || 'Sorry, I didn\'t understand that.';
-      
-      removeTypingIndicator();
-      addMessage('bot', botMsg);
-    } catch (err) {
-      console.error('[Chatbot] Send failed:', err);
-      removeTypingIndicator();
-      addMessage('bot', 'Sorry, there was an error. Please try again.');
-    }
-  }
-
-  function addMessage(who, text) {
-    if (!msgList) return;
-
-    msgQueue.push({ who, text, time: Date.now() });
-    if (msgQueue.length > 50) msgQueue.shift(); 
-
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = `display:flex;justify-content:${who === 'user' ? 'flex-end' : 'flex-start'}`;
-
-    const bubble = document.createElement('div');
-
-    if (who === 'staff') {
-      // Staff message styling
-      bubble.style.cssText = `
-        max-width:70%;padding:12px 16px;border-radius:16px;
-        font-size:14px;line-height:1.5;word-wrap:break-word;
-        background:#10b981;color:#fff;box-shadow:0 2px 8px rgba(16,185,129,0.12);
-      `;
-
-      // staffName may be passed as third arg in some calls
-      const staffName = arguments[2] || 'Agent';
-      const label = document.createElement('div');
-      label.textContent = staffName;
-      label.style.cssText = 'font-size:11px;opacity:0.95;margin-bottom:6px;font-weight:600;';
-      bubble.appendChild(label);
-
-      const textDiv = document.createElement('div');
-      textDiv.innerHTML = parseMarkdown(text);
-      applyMarkdownStyles(textDiv);
-      bubble.appendChild(textDiv);
-    } else {
-      bubble.style.cssText = `
-        max-width:70%;padding:12px 16px;border-radius:16px;
-        font-size:14px;line-height:1.5;word-wrap:break-word;
-        ${who === 'user' ? `background:${COLOR};color:#fff` : 'background:#f3f4f6;color:#1f2937'}
-      `;
-
-      if (who === 'bot') {
-        bubble.innerHTML = parseMarkdown(text);
-        applyMarkdownStyles(bubble);
-      } else {
-        bubble.textContent = text;
-      }
-    }
-
-    wrapper.appendChild(bubble);
-    msgList.appendChild(wrapper);
-    msgList.scrollTop = msgList.scrollHeight;
-  }
-
-  function addSystemMessage(text) {
-    if (!msgList) return;
-    const div = document.createElement('div');
-    div.style.cssText = 'text-align:center;color:#6b7280;font-size:13px;padding:8px 12px;';
-    div.textContent = text;
-    msgList.appendChild(div);
-    msgList.scrollTop = msgList.scrollHeight;
-  }
-
-  function handleStaffJoined(data) {
-    const staffName = data.staff_name || 'Agent';
-    const message = data.message || `${staffName} has joined the conversation`;
-    
-    // Step 1: Show "Agent is connecting..." message
-    const connectingMsg = addSystemMessage(`🔄 ${staffName} is connecting...`);
-    
-    // Step 2: After 800ms, update to "Agent connected"
-    setTimeout(() => {
-      // Remove the connecting message
-      const messages = msgList.querySelectorAll('div');
-      messages.forEach(msg => {
-        if (msg.textContent && msg.textContent.includes('is connecting...')) {
-          msg.remove();
-        }
-      });
-      
-      // Add connected message
-      addSystemMessage(`✅ ${message}`);
-      
-      // Step 3: After another 500ms, show typing indicator
-      setTimeout(() => {
-        showTypingIndicator();
-      }, 500);
-      
-    }, 800);
-  }
-
-  function applyMarkdownStyles(bubble) {
-    bubble.querySelectorAll('pre').forEach(pre => {
-      pre.style.cssText = 'background:#1e293b;color:#e2e8f0;padding:12px;border-radius:8px;overflow-x:auto;margin:8px 0;';
-    });
-    bubble.querySelectorAll('code:not(pre code)').forEach(code => {
-      code.style.cssText = 'background:#e5e7eb;color:#1f2937;padding:2px 6px;border-radius:4px;font-family:monospace;font-size:13px;';
-    });
-    bubble.querySelectorAll('ul, ol').forEach(list => {
-      list.style.cssText = 'margin:8px 0;padding-left:20px;';
-    });
-    bubble.querySelectorAll('a').forEach(link => {
-      link.style.cssText = `color:${COLOR};text-decoration:underline;`;
-    });
-    bubble.querySelectorAll('h1, h2, h3').forEach(header => {
-      header.style.cssText = 'margin:8px 0;font-weight:600;';
-    });
-    bubble.querySelectorAll('p').forEach(p => {
-      p.style.cssText = 'margin:8px 0;';
-    });
-  }
-
-  let streamingMessages = {};
-
-  function handleStreamingChunk(data) {
-    const messageId = data.message_id;
-    
-    if (!streamingMessages[messageId]) {
-      removeTypingIndicator();
-      
-      const wrapper = document.createElement('div');
-      wrapper.id = `msg-${messageId}`;
-      wrapper.style.cssText = 'display:flex;justify-content:flex-start';
-
-      const bubble = document.createElement('div');
-      bubble.className = 'streaming-bubble';
-      bubble.style.cssText = `
-        max-width:70%;padding:12px 16px;border-radius:16px;
-        font-size:14px;line-height:1.5;word-wrap:break-word;
-        background:#f3f4f6;color:#1f2937;
-      `;
-      
-      wrapper.appendChild(bubble);
-      msgList.appendChild(wrapper);
-      
-      streamingMessages[messageId] = { wrapper, bubble, text: '' };
-    }
-    
-    const streaming = streamingMessages[messageId];
-    streaming.text += data.text;
-    streaming.bubble.innerHTML = parseMarkdown(streaming.text);
-    applyMarkdownStyles(streaming.bubble);
-    
-    msgList.scrollTop = msgList.scrollHeight;
-  }
-
-  function finalizeStreamingMessage(messageId) {
-    const streaming = streamingMessages[messageId];
-    if (streaming) {
-      msgQueue.push({ who: 'bot', text: streaming.text, time: Date.now() });
-      if (msgQueue.length > 50) msgQueue.shift();
-      
-      delete streamingMessages[messageId];
-    }
-  }
-
-  function handleClosurePrompt(data) {
-    console.log('[Chatbot] Handling closure prompt:', data);
-    
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = 'display:flex;justify-content:flex-start;margin:10px 0';
-
-    const bubble = document.createElement('div');
-    bubble.style.cssText = `
-      max-width:70%;padding:12px 16px;border-radius:16px;
-      font-size:14px;line-height:1.5;
-      background:#f3f4f6;color:#1f2937;
-    `;
-    
-    const messageText = document.createElement('div');
-    messageText.textContent = data.message;
-    messageText.style.marginBottom = '10px';
-    bubble.appendChild(messageText);
-    
-    const buttonsContainer = document.createElement('div');
-    buttonsContainer.style.cssText = 'display:flex;gap:8px;margin-top:8px';
-    
-    if (data.options && Array.isArray(data.options)) {
-      data.options.forEach(option => {
-        const btn = document.createElement('button');
-        btn.textContent = option.text;
-        btn.style.cssText = `
-          padding:8px 16px;border-radius:8px;border:none;
-          background:${COLOR};color:#fff;cursor:pointer;
-          font-size:13px;font-weight:500;transition:opacity .2s;
-        `;
-        btn.onmouseenter = () => btn.style.opacity = '0.8';
-        btn.onmouseleave = () => btn.style.opacity = '1';
-        btn.onclick = () => handleClosureResponse(option.id, buttonsContainer);
-        buttonsContainer.appendChild(btn);
-      });
-    }
-    
-    bubble.appendChild(buttonsContainer);
-    wrapper.appendChild(bubble);
-    msgList.appendChild(wrapper);
-    msgList.scrollTop = msgList.scrollHeight;
-  }
-
-  function handleClosureResponse(choice, buttonsContainer) {
-    
-    if (buttonsContainer) {
-      const buttons = buttonsContainer.querySelectorAll('button');
-      buttons.forEach(btn => {
-        btn.disabled = true;
-        btn.style.opacity = '0.5';
-        btn.style.cursor = 'not-allowed';
-      });
-    }
-    
-    if (choice === 'continue') {
-      addMessage('bot', 'Great! How else can I help you?');
-      startInactivityTimer();
-    } else if (choice === 'end') {
-      addMessage('bot', 'Thank you for chatting! Feel free to come back anytime.');
-      
-      // Send disconnect message to properly close the session
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        isDisconnecting = true;
-        ws.send(JSON.stringify({
-          type: 'disconnect',
-          session_id: sessionId,
-          tenant_id: TENANT_ID,
-          reason: 'user_ended_chat'
-        }));
-      }
-      
-      setTimeout(() => closeChatWindow(), 2000);
-    }
-  }
-
-  function showStatusMessage(text) {
-    if (!msgList) return;
-    const div = document.createElement('div');
-    div.className = 'status-message';
-    div.textContent = text;
-    div.style.cssText = `
-      text-align:center;color:#718096;padding:20px;
-      font-size:14px;font-style:italic;
-    `;
-    msgList.appendChild(div);
-  }
-
-  function clearStatusMessages() {
-    if (!msgList) return;
-    const statusMessages = msgList.querySelectorAll('.status-message');
-    statusMessages.forEach(msg => msg.remove());
-  }
-
+  // ── Markdown ───────────────────────────────────────────────────────────────
   function parseMarkdown(text) {
     if (!text) return '';
-    
-    let html = text;
-    
-    const codeBlocks = [];
-    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-      const placeholder = `___CODE_${codeBlocks.length}___`;
-      codeBlocks.push(`<pre><code class="language-${lang || 'plaintext'}">${escapeHtml(code.trim())}</code></pre>`);
-      return placeholder;
+    var codes = [], inlines = [];
+    var html  = text;
+
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, function(_, lang, code) {
+      var idx = codes.length;
+      codes.push('<pre><code class="lang-' + (lang||'text') + '">' + esc(code.trim()) + '</code></pre>');
+      return '___C' + idx + '___';
     });
-    
-    const inlineCodes = [];
-    html = html.replace(/`([^`]+)`/g, (match, code) => {
-      const placeholder = `___INLINE_${inlineCodes.length}___`;
-      inlineCodes.push(`<code>${escapeHtml(code)}</code>`);
-      return placeholder;
+    html = html.replace(/`([^`]+)`/g, function(_, code) {
+      var idx = inlines.length;
+      inlines.push('<code>' + esc(code) + '</code>');
+      return '___I' + idx + '___';
     });
-    
-    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    
-    html = html.replace(/\*\*([^\*]+)\*\*/g, '<strong>$1</strong>'); // Bold
-    html = html.replace(/\*([^\*]+)\*/g, '<em>$1</em>'); // Italic
-    html = html.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>'); // Links
-    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>'); // Headers
-    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-    
-    html = html.replace(/(?:^[\*\-] .+$\n?)+/gm, match => {
-      const items = match.trim().split('\n').map(line => line.replace(/^[\*\-] (.+)$/, '<li>$1</li>')).join('');
-      return `<ul>${items}</ul>`;
+
+    html = html.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    html = html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g,'<em>$1</em>');
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    html = html.replace(/^### (.+)$/gm,'<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm,'<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm,'<h1>$1</h1>');
+    html = html.replace(/(?:^[*\-] .+$\n?)+/gm, function(m) {
+      return '<ul>' + m.trim().split('\n').map(function(l){ return '<li>' + l.replace(/^[*\-] /,'') + '</li>'; }).join('') + '</ul>';
     });
-    html = html.replace(/(?:^\d+\. .+$\n?)+/gm, match => {
-      const items = match.trim().split('\n').map(line => line.replace(/^\d+\. (.+)$/, '<li>$1</li>')).join('');
-      return `<ol>${items}</ol>`;
+    html = html.replace(/(?:^\d+\. .+$\n?)+/gm, function(m) {
+      return '<ol>' + m.trim().split('\n').map(function(l){ return '<li>' + l.replace(/^\d+\. /,'') + '</li>'; }).join('') + '</ol>';
     });
-    
-    html = html.split(/\n\n+/).map(p => {
+    html = html.split(/\n\n+/).map(function(p) {
       p = p.trim();
-      if (p.startsWith('<h') || p.startsWith('<ul') || p.startsWith('<ol') || p.startsWith('<pre') || p.startsWith('___')) return p;
-      p = p.replace(/\n/g, '<br>');
-      return p ? `<p>${p}</p>` : '';
+      if (!p || /^<(h[123]|ul|ol|pre)/.test(p) || /^___/.test(p)) return p;
+      return '<p>' + p.replace(/\n/g,'<br>') + '</p>';
     }).join('');
-    
-    codeBlocks.forEach((block, i) => html = html.replace(`___CODE_${i}___`, block));
-    inlineCodes.forEach((code, i) => html = html.replace(`___INLINE_${i}___`, code));
-    
+
+    codes.forEach(function(b,i)   { html = html.replace('___C'+i+'___', b); });
+    inlines.forEach(function(c,i) { html = html.replace('___I'+i+'___', c); });
     return html;
   }
 
-  function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+  function applyMdStyles(el) {
+    var pres = el.querySelectorAll('pre');
+    for (var i=0;i<pres.length;i++) pres[i].style.cssText='background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow-x:auto;margin:8px 0;font-size:12.5px;line-height:1.5;';
+    var codes = el.querySelectorAll('code:not(pre code)');
+    for (var i=0;i<codes.length;i++) codes[i].style.cssText='background:#f1f5f9;color:#be185d;padding:2px 6px;border-radius:4px;font-size:12.5px;font-family:monospace;';
+    var lists = el.querySelectorAll('ul,ol');
+    for (var i=0;i<lists.length;i++) lists[i].style.cssText='margin:6px 0;padding-left:18px;';
+    var links = el.querySelectorAll('a');
+    for (var i=0;i<links.length;i++) links[i].style.cssText='color:'+COLOR+';text-decoration:underline;';
+    var hdrs = el.querySelectorAll('h1,h2,h3');
+    for (var i=0;i<hdrs.length;i++) hdrs[i].style.cssText='margin:6px 0;font-weight:700;';
+    var ps = el.querySelectorAll('p');
+    for (var i=0;i<ps.length;i++) ps[i].style.cssText='margin:4px 0;';
   }
 
-  function showTypingIndicator() {
-    if (!msgList) return;
-    
-    removeTypingIndicator();
-    
-    const wrapper = document.createElement('div');
-    wrapper.id = 'typing-indicator';
-    wrapper.style.cssText = 'display:flex;justify-content:flex-start;margin:8px 0;';
+  function esc(t) { var d=document.createElement('div'); d.textContent=t; return d.innerHTML; }
 
-    const bubble = document.createElement('div');
-    bubble.style.cssText = `
-      padding:12px 16px;border-radius:16px;
-      background:#f3f4f6;color:#1f2937;
-      display:flex;align-items:center;gap:4px;
-    `;
-
-    for (let i = 0; i < 3; i++) {
-      const dot = document.createElement('div');
-      dot.style.cssText = `
-        width:8px;height:8px;border-radius:50%;
-        background:#9ca3af;
-        animation:typing-bounce 1.4s infinite ease-in-out;
-        animation-delay:${i * 0.2}s;
-      `;
-      bubble.appendChild(dot);
-    }
-    
-    wrapper.appendChild(bubble);
-    msgList.appendChild(wrapper);
-    msgList.scrollTop = msgList.scrollHeight;
-    
-    if (!document.getElementById('typing-animation-style')) {
-      const style = document.createElement('style');
-      style.id = 'typing-animation-style';
-      style.textContent = `
-        @keyframes typing-bounce {
-          0%, 60%, 100% {
-            transform: translateY(0);
-            opacity: 0.7;
-          }
-          30% {
-            transform: translateY(-10px);
-            opacity: 1;
-          }
-        }
-      `;
-      document.head.appendChild(style);
-    }
+  // ── Global styles ──────────────────────────────────────────────────────────
+  function injectStyles() {
+    if (document.getElementById('cb-global-styles')) return;
+    var s    = document.createElement('style');
+    s.id     = 'cb-global-styles';
+    s.textContent =
+      '@keyframes cb-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}' +
+      '@keyframes cb-bounce{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-8px);opacity:1}}' +
+      '#cb-msgs::-webkit-scrollbar{width:4px}' +
+      '#cb-msgs::-webkit-scrollbar-track{background:transparent}' +
+      '#cb-msgs::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:99px}' +
+      '#cb-msgs::-webkit-scrollbar-thumb:hover{background:#94a3b8}';
+    document.head.appendChild(s);
   }
 
-  function removeTypingIndicator() {
-    const indicator = document.getElementById('typing-indicator');
-    if (indicator) {
-      indicator.remove();
-    }
+  // ── Color helpers ──────────────────────────────────────────────────────────
+  function darken(hex, amount) {
+    try {
+      var r = Math.max(0, parseInt(hex.slice(1,3),16) - amount);
+      var g = Math.max(0, parseInt(hex.slice(3,5),16) - amount);
+      var b = Math.max(0, parseInt(hex.slice(5,7),16) - amount);
+      return '#' + r.toString(16).padStart(2,'0') + g.toString(16).padStart(2,'0') + b.toString(16).padStart(2,'0');
+    } catch(e) { return hex; }
   }
 
-  window.addEventListener('beforeunload', () => {
+  function rgba(hex, a) {
+    try {
+      var r = parseInt(hex.slice(1,3),16);
+      var g = parseInt(hex.slice(3,5),16);
+      var b = parseInt(hex.slice(5,7),16);
+      return 'rgba('+r+','+g+','+b+','+a+')';
+    } catch(e) { return hex; }
+  }
+
+  // ── Icons ──────────────────────────────────────────────────────────────────
+  function iconChat() {
+    return '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+  }
+  function iconClose() {
+    return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+  }
+  function iconSend() {
+    return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
+  }
+
+  // ── Cleanup ────────────────────────────────────────────────────────────────
+  window.addEventListener('beforeunload', function() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       isDisconnecting = true;
-      try {
-        ws.send(JSON.stringify({ 
-          type: 'disconnect',
-          session_id: sessionId,
-          tenant_id: TENANT_ID,
-          reason: 'page_unload'
-        }));
-      } catch (e) { /* ignore */ }
+      try { ws.send(JSON.stringify({ type: 'disconnect', session_id: sessionId, tenant_id: TENANT_ID, reason: 'page_unload' })); } catch(e) {}
       ws.close();
     }
-    if (wsPingInterval) clearInterval(wsPingInterval);
+    if (wsPingInterval)  clearInterval(wsPingInterval);
     if (inactivityTimer) clearTimeout(inactivityTimer);
   });
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
-
-  window.ChatbotSDK = {
-    open: openChatWindow,
-    close: closeChatWindow,
-    isOpen: () => isOpen,
-    getSession: () => sessionId
-  };
 
 })();

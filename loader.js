@@ -2,20 +2,23 @@
  * WM Studio Chatbot Loader
  * Lightweight (~1.5 KB) parent-side embed script.
  *
- * Usage — include BEFORE </body>:
+ * ── Production usage on wmstudio.io (add before </body>) ──────────────────
  *
  *   <script>
  *     window.__CHATBOT_CONFIG = {
- *       widgetUrl:      'https://your-chatbot-domain.com/embed.html', // REQUIRED
- *       apiUrl:         'https://your-backend.com/api/v1',
- *       primaryColor:   '#0ea5e9',
- *       companyName:    'Your Company',
- *       welcomeMessage: 'Hi! How can I help?',
+ *       widgetUrl:      'https://wm-chatbot.fly.dev/embed.html',
+ *       apiUrl:         'https://chat-widget.fly.dev/api/v1',
+ *       primaryColor:   '#6366f1',
+ *       companyName:    'WM Studio',
+ *       welcomeMessage: 'Hi! How can I help you today?',
  *       tenantId:       'your-tenant-id',  // optional
- *       theme:          'light',           // 'light' | 'dark'
  *     };
  *   </script>
- *   <script src="loader.js" defer></script>
+ *   <script src="https://wm-chatbot.fly.dev/loader.js" defer></script>
+ *
+ * ── Local development (localhost) ─────────────────────────────────────────
+ *   1. In your terminal: cd /path/to/chatbot && python3 -m http.server 3000
+ *   2. Use widgetUrl: 'http://localhost:3000/embed.html'
  *
  * Programmatic control (after load):
  *   ChatbotLoader.open()   – open the widget
@@ -28,12 +31,17 @@
   var CFG = window.__CHATBOT_CONFIG || {};
 
   // widgetUrl must point to wherever embed.html is hosted.
-  var WIDGET_URL = CFG.widgetUrl || '/chatbot/embed.html';
+  // Auto-detect localhost vs production
+  var isLocal    = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var WIDGET_URL = CFG.widgetUrl || (isLocal
+    ? 'http://localhost:3000/embed.html'
+    : 'https://wm-chatbot.fly.dev/embed.html');
 
   // ── Build iframe src with config as query params ─────────────────────────
   function buildSrc() {
     var p = new URLSearchParams();
-    if (CFG.apiUrl)         p.set('apiUrl',         CFG.apiUrl);
+    // Always pass apiUrl — fall back to the deployed backend
+    p.set('apiUrl', CFG.apiUrl || 'https://chat-widget.fly.dev/api/v1');
     if (CFG.primaryColor)   p.set('primaryColor',   CFG.primaryColor);
     if (CFG.companyName)    p.set('companyName',     CFG.companyName);
     if (CFG.welcomeMessage) p.set('welcomeMessage',  CFG.welcomeMessage);

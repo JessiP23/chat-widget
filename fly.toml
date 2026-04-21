@@ -1,8 +1,3 @@
-# fly.toml app configuration file generated for chat-widget on 2026-04-21T19:30:46Z
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
 app = 'chat-widget'
 primary_region = 'iad'
 
