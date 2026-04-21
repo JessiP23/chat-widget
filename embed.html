@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat</title>
+  <style>
+    /* Reset — full viewport used by widget */
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+  </style>
+</head>
+<body>
+<script>
+  /**
+   * embed.html — the iframe host for the chatbot widget.
+   *
+   * Config priority (highest → lowest):
+   *   1. URL query params (set by loader.js when building iframe src)
+   *   2. postMessage { type: 'chatbot:config', config: {...} } from parent
+   *   3. Defaults inside widget.js
+   */
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+
+    // Build __CHATBOT_CONFIG from URL params so widget.js picks it up.
+    window.__CHATBOT_CONFIG = {
+      apiUrl:         params.get('apiUrl')         || 'https://your-backend.com/api/v1',
+      primaryColor:   params.get('primaryColor')   || '#0ea5e9',
+      companyName:    params.get('companyName')     || 'Support',
+      welcomeMessage: params.get('welcomeMessage')  || 'Hi! How can I help you today?',
+      theme:          params.get('theme')           || 'light',
+    };
+
+    // tenantId is optional — only include if present
+    var tenantId = params.get('tenantId');
+    if (tenantId) window.__CHATBOT_CONFIG.tenantId = tenantId;
+
+    // Listen for late config or control messages from the parent frame
+    window.addEventListener('message', function (e) {
+      var msg = e.data;
+      if (!msg || typeof msg !== 'object') return;
+
+      if (msg.type === 'chatbot:config' && msg.config) {
+        // Merge late config — useful if parent calls ChatbotLoader.init() after load
+        Object.assign(window.__CHATBOT_CONFIG, msg.config);
+        if (window.ChatbotSDK && window.ChatbotSDK.init) {
+          window.ChatbotSDK.init(msg.config);
+        }
+      }
+
+      if (msg.type === 'chatbot:open'  && window.ChatbotSDK) window.ChatbotSDK.open();
+      if (msg.type === 'chatbot:close' && window.ChatbotSDK) window.ChatbotSDK.close();
+    });
+  })();
+</script>
+
+<!-- The actual widget — runs fully inside this iframe -->
+<script src="widget.js"></script>
+
+<script>
+  // Notify parent that the widget is ready
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage({ type: 'chatbot:ready' }, '*');
+  }
+</script>
+</body>
+</html>
