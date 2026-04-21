@@ -31,8 +31,10 @@
     var params = new URLSearchParams(window.location.search);
 
     // Build __CHATBOT_CONFIG from URL params so widget.js picks it up.
+    var _isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    var _backendUrl = 'https://chatbot-dashboard-h719.onrender.com/api/v1';
     window.__CHATBOT_CONFIG = {
-      apiUrl:         params.get('apiUrl')         || (window.location.origin + '/api/v1'),
+      apiUrl:         params.get('apiUrl') || (_isLocal ? _backendUrl : (location.origin + '/api/v1')),
       primaryColor:   params.get('primaryColor')   || '#6366f1',
       companyName:    params.get('companyName')     || 'Support',
       welcomeMessage: params.get('welcomeMessage')  || 'Hi! How can I help you today?',

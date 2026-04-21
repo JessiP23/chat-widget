@@ -35,7 +35,7 @@
   var isLocal    = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   var WIDGET_URL = CFG.widgetUrl || (isLocal
     ? 'http://localhost:3000/embed.html'
-    : 'https://wm-chatbot.fly.dev/embed.html');
+    : 'https://chat-widget.fly.dev/embed.html');
 
   // ── Build iframe src with config as query params ─────────────────────────
   function buildSrc() {

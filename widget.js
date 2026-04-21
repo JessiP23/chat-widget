@@ -2,11 +2,12 @@
   'use strict';
 
   // ── Config ────────────────────────────────────────────────────────────────
-  // Use a relative /api/v1 path by default so the widget always talks to the
-  // same host it was loaded from (nginx proxies it to the real backend).
-  // This avoids CORS entirely — same-origin requests never need preflight.
+  // On fly.dev (chat-widget.fly.dev): use relative /api/v1 — nginx proxies it to the backend.
+  // On localhost with python http.server: hit the backend directly (python can't proxy).
+  var _isLocal  = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var _backendUrl = 'https://chatbot-dashboard-h719.onrender.com/api/v1';
   var defaultCfg = {
-    apiUrl:         window.location.origin + '/api/v1',
+    apiUrl:         _isLocal ? _backendUrl : (location.origin + '/api/v1'),
     primaryColor:   '#6366f1',
     position:       'bottom-right',
     welcomeMessage: 'Hi! How can I help you today?',
