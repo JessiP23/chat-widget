@@ -1,9 +1,6 @@
 (function () {
   'use strict';
 
-  // ── Config ────────────────────────────────────────────────────────────────
-  // On fly.dev (chat-widget.fly.dev): use relative /api/v1 — nginx proxies it to the backend.
-  // On localhost with python http.server: hit the backend directly (python can't proxy).
   var _isLocal  = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   var _backendUrl = 'https://wm-chatbot-api.fly.dev/api/v1';
   var defaultCfg = {
@@ -271,6 +268,7 @@
 
   function closeChat() {
     if (!container) return;
+    generateInsight(); // summarise + clear before closing
     container.style.transition = 'opacity 0.3s cubic-bezier(0.16,1,0.3,1),transform 0.3s cubic-bezier(0.16,1,0.3,1)';
     container.style.opacity   = '0';
     container.style.transform = 'translateY(8px)';
@@ -760,7 +758,11 @@
 
   function trySend(text) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'chat_message', text: text, session_id: sessionId, tenant_id: TENANT_ID }));
+      // Send full history so backend stays stateless — browser owns the conversation
+      var history = msgQueue.map(function(m) {
+        return { role: m.who === 'user' ? 'user' : 'assistant', content: m.text };
+      });
+      ws.send(JSON.stringify({ type: 'chat_message', text: text, session_id: sessionId, tenant_id: TENANT_ID, history: history }));
       setSendDisabled(false);
     } else {
       // WS not ready — try REST fallback
@@ -775,10 +777,13 @@
   }
 
   function sendREST(text) {
+    var history = msgQueue.map(function(m) {
+      return { role: m.who === 'user' ? 'user' : 'assistant', content: m.text };
+    });
     fetch(API + '/conversations', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tenant_id: TENANT_ID, session_id: sessionId, user_message: text }),
+      body: JSON.stringify({ tenant_id: TENANT_ID, session_id: sessionId, user_message: text, history: history }),
     })
     .then(function(res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -1038,8 +1043,31 @@
 
   // ── Icons (removed — text characters used instead) ────────────────────────
 
+  // ── Session insight ────────────────────────────────────────────────────────
+  // Called when the session ends. Sends messages to backend → Groq summarises
+  // → stored in Supabase. Browser messages are then cleared.
+  function generateInsight() {
+    if (!sessionId || msgQueue.length < 2) return;
+    var messages = msgQueue.map(function(m) {
+      return { role: m.who === 'user' ? 'user' : 'assistant', content: m.text };
+    });
+    var payload = JSON.stringify({ session_id: sessionId, tenant_id: TENANT_ID, messages: messages });
+    var url = API + '/sessions/insight';
+    // keepalive:true works on page-unload AND normal closes; handles CORS correctly
+    // sendBeacon with application/json cannot do CORS preflight so we avoid it
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+      keepalive: true,
+    }).catch(function() {});
+    msgQueue = []; // clear browser messages — session is over
+    sessionId = null;
+  }
+
   // ── Cleanup ────────────────────────────────────────────────────────────────
   window.addEventListener('beforeunload', function() {
+    // Disconnect WS first (needs sessionId), then generate insight (nulls sessionId)
     if (ws && ws.readyState === WebSocket.OPEN) {
       isDisconnecting = true;
       try { ws.send(JSON.stringify({ type: 'disconnect', session_id: sessionId, tenant_id: TENANT_ID, reason: 'page_unload' })); } catch(e) {}
@@ -1047,6 +1075,7 @@
     }
     if (wsPingInterval)  clearInterval(wsPingInterval);
     if (inactivityTimer) clearTimeout(inactivityTimer);
+    generateInsight(); // fire after WS is closed — keepalive fetch survives page unload
   });
 
 })();
