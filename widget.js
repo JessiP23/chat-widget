@@ -8,7 +8,7 @@
   var _backendUrl = 'https://wm-chatbot-api.fly.dev/api/v1';
   var defaultCfg = {
     apiUrl:         _isLocal ? _backendUrl : (location.origin + '/api/v1'),
-    primaryColor:   '#6366f1',
+    primaryColor:   '#C8FF00',
     position:       'bottom-right',
     welcomeMessage: 'Hi! How can I help you today?',
     companyName:    'Support',
@@ -22,6 +22,15 @@
   var COMPANY   = cfg.companyName;
   var TENANT_ID = cfg.tenantId || cfg.tenant_id || null;
 
+  // ── Design tokens ──────────────────────────────────────────────────────────
+  var C_VOID    = '#0C0C0E';
+  var C_PANEL   = '#141416';
+  var C_SURFACE = '#1C1C1F';
+  var C_EDGE    = '#2A2A2E';
+  var C_TEXT    = '#E8E8EC';
+  var C_DIM     = '#5A5A62';
+  var C_WM      = '#C8FF00';
+
   // Runtime state
   var sessionId        = null;
   var ws               = null;
@@ -33,9 +42,12 @@
   var inactivityTimer  = null;
   var streamingMsgs    = {};
   var msgQueue         = [];
+  var currentMode      = 'GENERAL';
+  var tokenCount       = 0;
 
   // DOM refs
   var container, msgList, inputField, sendBtn, statusDot, statusText;
+  var suggestionsEl, charCounter, tokenDotsEl;
 
   // ── Public API ─────────────────────────────────────────────────────────────
   window.ChatbotSDK = {
@@ -181,28 +193,48 @@
   // ── Launcher (standalone) ──────────────────────────────────────────────────
   function buildLauncher() {
     if (document.getElementById('cb-launcher')) return;
-    var btn    = document.createElement('button');
-    btn.id     = 'cb-launcher';
-    var side   = POS.includes('right') ? 'right:24px' : 'left:24px';
-    btn.setAttribute('style',
-      'all:initial;position:fixed;' + side + ';bottom:24px;' +
-      'width:60px;height:60px;border-radius:50%;' +
-      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
-      'color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;' +
-      'box-shadow:0 4px 20px rgba(0,0,0,.28);z-index:2147483646;border:none;' +
-      'transition:transform .2s,box-shadow .2s;font-family:sans-serif;');
-    btn.innerHTML = iconChat();
-    btn.setAttribute('aria-label', 'Open chat');
+    injectStyles();
+
+    var wrap = document.createElement('div');
+    wrap.id = 'cb-launcher-wrap';
+    var side = POS.includes('right') ? 'right:28px' : 'left:28px';
+    wrap.style.cssText =
+      'all:initial;position:fixed;' + side + ';bottom:28px;' +
+      'display:flex;flex-direction:column;align-items:center;gap:6px;' +
+      'z-index:2147483646;font-family:"Geist Mono",monospace;';
+
+    var btn = document.createElement('button');
+    btn.id = 'cb-launcher';
+    btn.setAttribute('aria-label', 'Open WM Studio chat');
+    btn.style.cssText =
+      'all:initial;width:52px;height:52px;border-radius:8px;cursor:pointer;' +
+      'background:' + C_PANEL + ';border:1px solid ' + C_EDGE + ';' +
+      'color:' + C_WM + ';font-family:"Geist Mono",monospace;font-size:14px;font-weight:700;' +
+      'display:flex;align-items:center;justify-content:center;letter-spacing:0.06em;' +
+      'transition:border-color 0.25s ease,background 0.25s ease,color 0.25s ease,letter-spacing 0.25s ease;';
+    btn.textContent = 'WM';
+
     btn.addEventListener('mouseenter', function() {
-      btn.style.transform = 'scale(1.1)';
-      btn.style.boxShadow = '0 8px 32px rgba(0,0,0,.35)';
+      if (!isOpen) { btn.style.borderColor = C_WM; }
+      btn.style.letterSpacing = '0.12em';
     });
     btn.addEventListener('mouseleave', function() {
-      btn.style.transform = 'scale(1)';
-      btn.style.boxShadow = '0 4px 20px rgba(0,0,0,.28)';
+      if (!isOpen) { btn.style.borderColor = C_EDGE; }
+      btn.style.letterSpacing = '0.06em';
     });
     btn.addEventListener('click', toggleChat);
-    document.body.appendChild(btn);
+
+    var label = document.createElement('div');
+    label.id = 'cb-launcher-label';
+    label.textContent = 'ASK';
+    label.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:8px;font-weight:700;' +
+      'letter-spacing:0.22em;color:' + C_DIM + ';text-transform:uppercase;' +
+      'transition:opacity 0.25s ease;';
+
+    wrap.appendChild(btn);
+    wrap.appendChild(label);
+    document.body.appendChild(wrap);
   }
 
   function toggleChat() { isOpen ? closeChat() : openChat(); }
@@ -213,11 +245,11 @@
     container.style.display = 'flex';
     requestAnimationFrame(function() {
       container.style.opacity   = '0';
-      container.style.transform = 'translateY(16px) scale(.97)';
+      container.style.transform = 'translateY(8px)';
       requestAnimationFrame(function() {
-        container.style.transition = 'opacity .24s ease,transform .24s ease';
+        container.style.transition = 'opacity 0.3s cubic-bezier(0.16,1,0.3,1),transform 0.3s cubic-bezier(0.16,1,0.3,1)';
         container.style.opacity    = '1';
-        container.style.transform  = 'translateY(0) scale(1)';
+        container.style.transform  = 'translateY(0)';
       });
     });
     isOpen = true;
@@ -239,18 +271,29 @@
 
   function closeChat() {
     if (!container) return;
+    container.style.transition = 'opacity 0.3s cubic-bezier(0.16,1,0.3,1),transform 0.3s cubic-bezier(0.16,1,0.3,1)';
     container.style.opacity   = '0';
-    container.style.transform = 'translateY(16px) scale(.97)';
-    setTimeout(function() { if (container) container.style.display = 'none'; }, 250);
+    container.style.transform = 'translateY(8px)';
+    setTimeout(function() { if (container) container.style.display = 'none'; }, 300);
     isOpen = false;
     updateLauncherIcon(false);
     if (window.parent !== window) window.parent.postMessage({ type: 'chatbot:close' }, '*');
   }
 
   function updateLauncherIcon(open) {
-    var btn = document.getElementById('cb-launcher');
+    var btn   = document.getElementById('cb-launcher');
+    var label = document.getElementById('cb-launcher-label');
     if (!btn) return;
-    btn.innerHTML = open ? iconClose() : iconChat();
+    if (open) {
+      btn.style.background  = C_WM;
+      btn.style.color       = C_VOID;
+      btn.style.borderColor = C_WM;
+    } else {
+      btn.style.background  = C_PANEL;
+      btn.style.color       = C_WM;
+      btn.style.borderColor = C_EDGE;
+    }
+    if (label) label.style.opacity = open ? '0' : '1';
   }
 
   // ── Build UI ───────────────────────────────────────────────────────────────
@@ -261,156 +304,245 @@
     container.id = 'cb-root';
 
     if (iframeMode) {
-      // Fill the entire iframe — no offsets
       container.style.cssText =
         'position:fixed;top:0;left:0;right:0;bottom:0;' +
         'display:flex;flex-direction:column;' +
-        'background:#f1f5f9;overflow:hidden;' +
-        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,sans-serif;';
+        'background:' + C_PANEL + ';overflow:hidden;' +
+        'font-family:"Geist Mono",monospace;color:' + C_TEXT + ';';
     } else {
-      var side = POS.includes('right') ? 'right:24px' : 'left:24px';
+      var side = POS.includes('right') ? 'right:28px' : 'left:28px';
       container.style.cssText =
         'position:fixed;' + side + ';bottom:96px;' +
-        'width:370px;height:580px;max-height:calc(100vh - 120px);' +
+        'width:400px;height:580px;max-height:calc(100vh - 120px);' +
         'display:none;flex-direction:column;' +
-        'background:#f1f5f9;border-radius:20px;' +
-        'box-shadow:0 24px 60px rgba(0,0,0,.22),0 0 0 1px rgba(0,0,0,.07);' +
+        'background:' + C_PANEL + ';border-radius:10px;' +
+        'border:1px solid ' + C_EDGE + ';' +
         'z-index:2147483645;overflow:hidden;' +
-        'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Inter",Roboto,sans-serif;';
+        'font-family:"Geist Mono",monospace;color:' + C_TEXT + ';';
     }
 
     // ── Header ───────────────────────────────────────────────────────────────
     var header = document.createElement('div');
     header.style.cssText =
-      'padding:14px 16px;flex-shrink:0;position:relative;overflow:hidden;' +
-      'background:linear-gradient(135deg,' + COLOR + ' 0%,' + darken(COLOR,50) + ' 100%);' +
-      'display:flex;align-items:center;gap:12px;';
+      'padding:13px 16px;flex-shrink:0;' +
+      'background:' + C_PANEL + ';border-bottom:1px solid ' + C_EDGE + ';' +
+      'display:flex;align-items:center;justify-content:space-between;';
     if (!iframeMode) {
       header.style.cursor = 'move';
       makeDraggable(header, container);
     }
 
-    // Decorative circles
-    var d1 = document.createElement('div');
-    d1.style.cssText = 'position:absolute;top:-28px;right:-28px;width:110px;height:110px;border-radius:50%;background:rgba(255,255,255,.08);pointer-events:none;';
-    var d2 = document.createElement('div');
-    d2.style.cssText = 'position:absolute;bottom:-40px;left:30px;width:90px;height:90px;border-radius:50%;background:rgba(255,255,255,.06);pointer-events:none;';
-    header.appendChild(d1);
-    header.appendChild(d2);
+    var headerLeft = document.createElement('div');
+    headerLeft.style.cssText = 'display:flex;align-items:center;';
 
-    var botAv = document.createElement('div');
-    botAv.style.cssText =
-      'width:42px;height:42px;border-radius:50%;flex-shrink:0;z-index:1;' +
-      'background:rgba(255,255,255,.18);border:2px solid rgba(255,255,255,.35);' +
-      'display:flex;align-items:center;justify-content:center;font-size:20px;';
-    botAv.textContent = '\uD83E\uDD16';
+    var brandWm = document.createElement('span');
+    brandWm.textContent = 'WM STUDIO';
+    brandWm.style.cssText =
+      'font-size:9px;font-weight:700;letter-spacing:0.2em;color:' + C_WM + ';' +
+      'text-transform:uppercase;font-family:"Geist Mono",monospace;';
 
-    var info = document.createElement('div');
-    info.style.cssText = 'flex:1;min-width:0;z-index:1;';
+    var brandSlash = document.createElement('span');
+    brandSlash.textContent = ' / ASSISTANT';
+    brandSlash.style.cssText =
+      'font-size:9px;font-weight:700;letter-spacing:0.2em;color:' + C_DIM + ';' +
+      'text-transform:uppercase;font-family:"Geist Mono",monospace;';
 
-    var nameEl = document.createElement('div');
-    nameEl.style.cssText = 'font-weight:700;font-size:15px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-    nameEl.textContent = COMPANY;
+    headerLeft.appendChild(brandWm);
+    headerLeft.appendChild(brandSlash);
 
-    var statusRow = document.createElement('div');
-    statusRow.style.cssText = 'display:flex;align-items:center;gap:5px;margin-top:2px;';
-    statusDot  = document.createElement('span');
-    statusText = document.createElement('span');
-    statusDot.style.cssText  = 'width:7px;height:7px;border-radius:50%;background:#34d399;display:inline-block;flex-shrink:0;transition:background .3s;';
-    statusText.style.cssText = 'font-size:11.5px;color:rgba(255,255,255,.85);font-weight:500;';
-    statusText.textContent   = 'Online';
-    statusRow.appendChild(statusDot);
-    statusRow.appendChild(statusText);
-    info.appendChild(nameEl);
-    info.appendChild(statusRow);
+    var headerRight = document.createElement('div');
+    headerRight.style.cssText = 'display:flex;align-items:center;gap:12px;';
+
+    tokenDotsEl = document.createElement('div');
+    tokenDotsEl.style.cssText = 'display:flex;align-items:center;gap:3px;';
+    updateTokenDots();
 
     var closeBtn = document.createElement('button');
     closeBtn.setAttribute('aria-label', 'Close');
     closeBtn.style.cssText =
-      'all:initial;width:32px;height:32px;border-radius:50%;z-index:1;flex-shrink:0;' +
-      'background:rgba(255,255,255,.15);color:#fff;cursor:pointer;border:none;' +
-      'display:flex;align-items:center;justify-content:center;font-size:20px;line-height:1;' +
-      'transition:background .15s;font-family:sans-serif;';
-    closeBtn.innerHTML = '&times;';
-    closeBtn.addEventListener('mouseenter', function() { closeBtn.style.background = 'rgba(255,255,255,.28)'; });
-    closeBtn.addEventListener('mouseleave', function() { closeBtn.style.background = 'rgba(255,255,255,.15)'; });
+      'all:initial;cursor:pointer;color:' + C_DIM + ';' +
+      'font-family:"Geist Mono",monospace;font-size:18px;line-height:1;' +
+      'display:flex;align-items:center;justify-content:center;' +
+      'transition:color 0.2s ease;';
+    closeBtn.textContent = '\xD7';
+    closeBtn.addEventListener('mouseenter', function() { closeBtn.style.color = C_TEXT; });
+    closeBtn.addEventListener('mouseleave', function() { closeBtn.style.color = C_DIM; });
     closeBtn.addEventListener('click', iframeMode
       ? function() { window.parent.postMessage({ type: 'chatbot:close' }, '*'); }
       : closeChat);
 
-    header.appendChild(botAv);
-    header.appendChild(info);
-    header.appendChild(closeBtn);
+    headerRight.appendChild(tokenDotsEl);
+    headerRight.appendChild(closeBtn);
+    header.appendChild(headerLeft);
+    header.appendChild(headerRight);
+
+    // ── Mode Bar ──────────────────────────────────────────────────────────────
+    var modeBarEl = document.createElement('div');
+    modeBarEl.style.cssText =
+      'display:flex;flex-shrink:0;border-bottom:1px solid ' + C_EDGE + ';' +
+      'background:' + C_PANEL + ';';
 
     // ── Message area ──────────────────────────────────────────────────────────
     msgList    = document.createElement('div');
     msgList.id = 'cb-msgs';
     msgList.style.cssText =
-      'flex:1;overflow-y:auto;padding:14px 12px;' +
-      'display:flex;flex-direction:column;gap:4px;scroll-behavior:smooth;';
+      'flex:1;overflow-y:auto;' +
+      'display:flex;flex-direction:column;scroll-behavior:smooth;' +
+      'background:' + C_PANEL + ';';
 
-    // Date divider
-    var today     = new Date().toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric' });
-    var divider   = document.createElement('div');
-    divider.style.cssText = 'display:flex;align-items:center;gap:10px;margin:0 0 10px;';
-    var l1 = document.createElement('div'); l1.style.cssText = 'flex:1;height:1px;background:#e2e8f0;';
-    var dl = document.createElement('span'); dl.style.cssText = 'font-size:11px;color:#94a3b8;white-space:nowrap;font-weight:500;'; dl.textContent = today;
-    var l2 = document.createElement('div'); l2.style.cssText = 'flex:1;height:1px;background:#e2e8f0;';
-    divider.appendChild(l1); divider.appendChild(dl); divider.appendChild(l2);
-    msgList.appendChild(divider);
+    // Suggestions grid (shown until first message)
+    suggestionsEl = document.createElement('div');
+    suggestionsEl.id = 'cb-suggestions';
+    suggestionsEl.style.cssText =
+      'display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:16px;';
+
+    var suggestions = [
+      { label: 'IMAGES', text: 'Generate a cinematic portrait' },
+      { label: 'VIDEOS', text: 'Create a 5-second product clip' },
+      { label: 'TOOLS',  text: 'Upscale my last image to 4K' },
+      { label: 'HELP',   text: 'How do credits work?' },
+    ];
+    suggestions.forEach(function(sg) {
+      var tile = document.createElement('div');
+      tile.style.cssText =
+        'background:' + C_SURFACE + ';border:1px solid ' + C_EDGE + ';border-radius:6px;' +
+        'padding:10px 12px;cursor:pointer;transition:border-color 0.2s ease;';
+      var tlabel = document.createElement('div');
+      tlabel.textContent = sg.label;
+      tlabel.style.cssText =
+        'font-size:8px;font-weight:700;letter-spacing:0.22em;color:' + C_DIM + ';' +
+        'text-transform:uppercase;margin-bottom:5px;font-family:"Geist Mono",monospace;' +
+        'transition:color 0.2s ease;';
+      var ttext = document.createElement('div');
+      ttext.textContent = sg.text;
+      ttext.style.cssText =
+        'font-size:11px;color:' + C_TEXT + ';line-height:1.5;font-family:"Geist Mono",monospace;';
+      tile.appendChild(tlabel);
+      tile.appendChild(ttext);
+      tile.addEventListener('mouseenter', function() {
+        tile.style.borderColor = C_WM;
+        tlabel.style.color     = C_WM;
+      });
+      tile.addEventListener('mouseleave', function() {
+        tile.style.borderColor = C_EDGE;
+        tlabel.style.color     = C_DIM;
+      });
+      tile.addEventListener('click', function() {
+        if (inputField) {
+          inputField.value = sg.text;
+          inputField.style.height = 'auto';
+          inputField.style.height = Math.min(inputField.scrollHeight, 120) + 'px';
+          inputField.focus();
+          updateCharCounter();
+          updateSendState();
+        }
+      });
+      suggestionsEl.appendChild(tile);
+    });
+    msgList.appendChild(suggestionsEl);
 
     // ── Input area ────────────────────────────────────────────────────────────
     var inputArea = document.createElement('div');
     inputArea.style.cssText =
-      'padding:10px 12px 14px;background:#fff;border-top:1px solid #e8ecf0;flex-shrink:0;';
+      'padding:10px 12px 12px;background:' + C_PANEL + ';' +
+      'border-top:1px solid ' + C_EDGE + ';flex-shrink:0;';
 
-    var inputWrap = document.createElement('div');
-    inputWrap.style.cssText =
-      'display:flex;align-items:center;gap:8px;' +
-      'background:#f8fafc;border-radius:26px;padding:7px 7px 7px 16px;' +
-      'border:2px solid #e2e8f0;transition:border-color .2s;';
+    var charRow = document.createElement('div');
+    charRow.style.cssText = 'display:flex;justify-content:flex-end;margin-bottom:5px;';
+    charCounter = document.createElement('span');
+    charCounter.textContent = '000/500';
+    charCounter.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:9px;color:' + C_DIM + ';' +
+      'font-variant-numeric:tabular-nums;letter-spacing:0.05em;';
+    charRow.appendChild(charCounter);
 
-    inputField = document.createElement('input');
-    inputField.type         = 'text';
-    inputField.placeholder  = 'Type a message\u2026';
+    inputField = document.createElement('textarea');
+    inputField.placeholder  = 'Ask about images, videos, tools\u2026';
     inputField.autocomplete = 'off';
+    inputField.rows = 1;
     inputField.style.cssText =
-      'flex:1;border:none;background:transparent;outline:none;' +
-      'font-size:14px;color:#1e293b;font-family:inherit;min-width:0;';
-    inputField.addEventListener('focus', function() { inputWrap.style.borderColor = COLOR; });
-    inputField.addEventListener('blur',  function() { inputWrap.style.borderColor = '#e2e8f0'; });
-    inputField.addEventListener('keypress', function(e) {
+      'display:block;width:100%;box-sizing:border-box;resize:none;overflow:hidden;' +
+      'background:' + C_SURFACE + ';border:1px solid ' + C_EDGE + ';border-radius:6px;' +
+      'padding:10px 12px;color:' + C_TEXT + ';' +
+      'font-family:"Geist Mono",monospace;font-size:13px;line-height:1.5;' +
+      'outline:none;max-height:120px;scrollbar-width:none;' +
+      'transition:border-color 0.2s ease;';
+
+    inputField.addEventListener('focus', function() { inputField.style.borderColor = C_WM; });
+    inputField.addEventListener('blur',  function() { inputField.style.borderColor = C_EDGE; });
+    inputField.addEventListener('input', function() {
+      inputField.style.height = 'auto';
+      inputField.style.height = Math.min(inputField.scrollHeight, 120) + 'px';
+      updateCharCounter();
+      updateSendState();
+    });
+    inputField.addEventListener('keydown', function(e) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
     });
 
+    var toolbar = document.createElement('div');
+    toolbar.style.cssText =
+      'display:flex;align-items:center;justify-content:space-between;margin-top:8px;';
+
+    var hint = document.createElement('span');
+    hint.textContent = 'SHIFT+\u21B5 NEW LINE';
+    hint.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:9px;color:' + C_DIM + ';letter-spacing:0.06em;';
+
     sendBtn = document.createElement('button');
     sendBtn.setAttribute('aria-label', 'Send');
+    sendBtn.textContent = 'SEND \u21B5';
     sendBtn.style.cssText =
-      'all:initial;width:36px;height:36px;border-radius:50%;flex-shrink:0;' +
-      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
-      'color:#fff;cursor:pointer;border:none;' +
-      'display:flex;align-items:center;justify-content:center;' +
-      'transition:transform .15s,opacity .15s;' +
-      'box-shadow:0 2px 10px ' + rgba(COLOR,.38) + ';font-family:sans-serif;';
-    sendBtn.innerHTML = iconSend();
-    sendBtn.addEventListener('mouseenter', function() { sendBtn.style.transform = 'scale(1.1)'; });
-    sendBtn.addEventListener('mouseleave', function() { sendBtn.style.transform = 'scale(1)'; });
+      'all:initial;padding:5px 12px;cursor:pointer;' +
+      'background:' + C_EDGE + ';color:' + C_DIM + ';' +
+      'font-family:"Geist Mono",monospace;font-size:9px;font-weight:700;' +
+      'letter-spacing:0.1em;text-transform:uppercase;border:none;' +
+      'transition:opacity 0.2s ease,background 0.2s ease,color 0.2s ease;';
+    sendBtn.addEventListener('mouseenter', function() {
+      if (sendBtn.style.background !== C_EDGE) sendBtn.style.opacity = '0.85';
+    });
+    sendBtn.addEventListener('mouseleave', function() { sendBtn.style.opacity = '1'; });
     sendBtn.addEventListener('click', doSend);
 
-    inputWrap.appendChild(inputField);
-    inputWrap.appendChild(sendBtn);
+    toolbar.appendChild(hint);
+    toolbar.appendChild(sendBtn);
 
-    var powered = document.createElement('div');
-    powered.style.cssText = 'text-align:center;font-size:10px;color:#b0bec5;padding-top:6px;font-family:inherit;letter-spacing:.03em;';
-    powered.textContent = '\u2736 Powered by WM Studio';
-
-    inputArea.appendChild(inputWrap);
-    inputArea.appendChild(powered);
+    inputArea.appendChild(charRow);
+    inputArea.appendChild(inputField);
+    inputArea.appendChild(toolbar);
 
     container.appendChild(header);
+    container.appendChild(modeBarEl);
     container.appendChild(msgList);
     container.appendChild(inputArea);
     document.body.appendChild(container);
+  }
+
+  // ── UI helpers ─────────────────────────────────────────────────────────────
+  function updateTokenDots() {
+    if (!tokenDotsEl) return;
+    tokenDotsEl.innerHTML = '';
+    for (var i = 0; i < 5; i++) {
+      var dot = document.createElement('span');
+      dot.style.cssText =
+        'display:inline-block;width:5px;height:5px;border-radius:50%;' +
+        'background:' + (i < tokenCount ? C_WM : C_EDGE) + ';';
+      tokenDotsEl.appendChild(dot);
+    }
+  }
+
+  function updateCharCounter() {
+    if (!charCounter || !inputField) return;
+    var len = (inputField.value || '').length;
+    charCounter.textContent = String(len).padStart(3, '0') + '/500';
+  }
+
+  function updateSendState() {
+    if (!sendBtn || !inputField) return;
+    var empty = !(inputField.value || '').trim();
+    sendBtn.style.background = empty ? C_EDGE : C_WM;
+    sendBtn.style.color      = empty ? C_DIM  : C_VOID;
+    sendBtn.style.cursor     = empty ? 'default' : 'pointer';
   }
 
   // ── Draggable (standalone) ─────────────────────────────────────────────────
@@ -434,96 +566,117 @@
 
   // ── Status ─────────────────────────────────────────────────────────────────
   function setStatus(state) {
-    if (!statusDot || !statusText) return;
-    if (state === 'online') {
-      statusDot.style.background = '#34d399'; statusText.textContent = 'Online';
-    } else if (state === 'connecting') {
-      statusDot.style.background = '#fbbf24'; statusText.textContent = 'Connecting\u2026';
-    } else {
-      statusDot.style.background = '#f87171'; statusText.textContent = 'Offline';
-    }
+    // Status is reflected silently via connection logic; no visible indicator in this UI.
+    void state;
   }
 
   // ── Messages ───────────────────────────────────────────────────────────────
   function addMsg(who, text, staffName) {
     if (!msgList) return;
+
+    // Dismiss suggestions on first message
+    if (suggestionsEl && suggestionsEl.parentNode) {
+      suggestionsEl.parentNode.removeChild(suggestionsEl);
+      suggestionsEl = null;
+    }
+
     msgQueue.push({ who: who, text: text, time: Date.now() });
     if (msgQueue.length > 100) msgQueue.shift();
+
+    // Advance token counter
+    tokenCount = Math.min(tokenCount + 1, 5);
+    updateTokenDots();
 
     var isUser  = who === 'user';
     var isStaff = who === 'staff';
     var time    = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
 
-    var row = document.createElement('div');
-    row.className    = 'cb-msg-row';
-    row.style.cssText =
-      'display:flex;flex-direction:' + (isUser ? 'row-reverse' : 'row') + ';' +
-      'align-items:flex-end;gap:8px;' +
-      'margin:' + (isUser ? '4px 0 2px' : '2px 0 4px') + ';' +
-      'animation:cb-in .22s ease;';
-
-    if (!isUser) {
-      var av = document.createElement('div');
-      av.style.cssText =
-        'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
-        'display:flex;align-items:center;justify-content:center;font-size:14px;' +
-        'background:' + (isStaff ? 'linear-gradient(135deg,#10b981,#059669)' : 'linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ')') + ';' +
-        'color:#fff;font-weight:700;border:2px solid #fff;' +
-        'box-shadow:0 2px 8px rgba(0,0,0,.1);';
-      av.textContent = isStaff ? (staffName || 'A')[0].toUpperCase() : '\uD83E\uDD16';
-      row.appendChild(av);
+    // Separator between message pairs
+    var rows = msgList.querySelectorAll('.cb-msg-row');
+    if (rows.length > 0) {
+      var sep = document.createElement('div');
+      sep.style.cssText = 'height:1px;background:' + C_EDGE + ';flex-shrink:0;';
+      msgList.appendChild(sep);
     }
 
-    var col = document.createElement('div');
-    col.style.cssText = 'display:flex;flex-direction:column;max-width:72%;' + (isUser ? 'align-items:flex-end' : 'align-items:flex-start');
+    var row = document.createElement('div');
+    row.className = 'cb-msg-row';
+    row.style.cssText =
+      'padding:12px 16px;position:relative;cursor:default;' +
+      'border-left:2px solid ' + (isUser ? C_EDGE : C_WM) + ';' +
+      'background:transparent;transition:background 0.2s ease;';
+
+    var copyEl = document.createElement('span');
+    copyEl.textContent = 'COPY';
+    copyEl.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:9px;color:' + C_DIM + ';' +
+      'cursor:pointer;opacity:0;transition:opacity 0.15s ease;letter-spacing:0.1em;';
+    copyEl.addEventListener('click', function(e) {
+      e.stopPropagation();
+      try {
+        navigator.clipboard.writeText(text);
+        copyEl.textContent = 'COPIED';
+        setTimeout(function() { copyEl.textContent = 'COPY'; }, 1200);
+      } catch(ex) {}
+    });
+
+    row.addEventListener('mouseenter', function() { row.style.background = C_SURFACE; copyEl.style.opacity = '1'; });
+    row.addEventListener('mouseleave', function() { row.style.background = 'transparent'; copyEl.style.opacity = '0'; });
 
     if (isStaff && staffName) {
       var nm = document.createElement('div');
-      nm.textContent   = staffName;
-      nm.style.cssText = 'font-size:11px;color:#6b7280;margin-bottom:3px;font-weight:600;';
-      col.appendChild(nm);
+      nm.textContent   = staffName.toUpperCase();
+      nm.style.cssText =
+        'font-size:8px;font-weight:700;letter-spacing:0.22em;color:' + C_DIM + ';' +
+        'margin-bottom:5px;font-family:"Geist Mono",monospace;';
+      row.appendChild(nm);
     }
 
     var bubble = document.createElement('div');
     if (isUser) {
       bubble.style.cssText =
-        'padding:10px 14px;border-radius:18px 18px 4px 18px;' +
-        'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
-        'color:#fff;font-size:14px;line-height:1.55;word-break:break-word;' +
-        'box-shadow:0 2px 10px ' + rgba(COLOR,.32) + ';';
+        'font-family:"Geist Mono",monospace;font-size:13px;font-weight:500;' +
+        'color:' + C_TEXT + ';line-height:1.5;word-break:break-word;text-align:right;';
       bubble.textContent = text;
     } else {
       bubble.style.cssText =
-        'padding:10px 14px;' +
-        'border-radius:' + (isStaff ? '18px 18px 18px 4px' : '4px 18px 18px 18px') + ';' +
-        'background:' + (isStaff ? '#f0fdf4' : '#fff') + ';' +
-        'color:#1e293b;font-size:14px;line-height:1.55;word-break:break-word;' +
-        'box-shadow:0 1px 6px rgba(0,0,0,.07);' +
-        'border:1px solid ' + (isStaff ? '#a7f3d0' : '#e8ecf0') + ';';
+        'font-family:"Geist Mono",monospace;font-size:13.5px;font-weight:400;' +
+        'color:' + C_TEXT + ';line-height:1.75;word-break:break-word;';
       bubble.innerHTML = parseMarkdown(text);
       applyMdStyles(bubble);
     }
 
-    var ts = document.createElement('div');
-    ts.textContent   = time;
-    ts.style.cssText = 'font-size:10px;color:#94a3b8;margin-top:3px;padding:0 2px;';
+    var meta = document.createElement('div');
+    meta.style.cssText =
+      'display:flex;align-items:center;justify-content:' + (isUser ? 'flex-end' : 'space-between') + ';' +
+      'margin-top:5px;gap:12px;';
 
-    col.appendChild(bubble);
-    col.appendChild(ts);
-    row.appendChild(col);
+    var ts = document.createElement('span');
+    ts.textContent   = time;
+    ts.style.cssText = 'font-family:"Geist Mono",monospace;font-size:10px;color:' + C_DIM + ';';
+
+    if (isUser) {
+      meta.appendChild(ts);
+    } else {
+      meta.appendChild(copyEl);
+      meta.appendChild(ts);
+    }
+
+    row.appendChild(bubble);
+    row.appendChild(meta);
     msgList.appendChild(row);
     msgList.scrollTop = msgList.scrollHeight;
   }
 
   function addSysMsg(text) {
     if (!msgList) return;
-    var wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;justify-content:center;margin:6px 0;';
-    var pill = document.createElement('div');
-    pill.style.cssText = 'font-size:11.5px;color:#64748b;background:rgba(148,163,184,.12);border-radius:999px;padding:4px 12px;border:1px solid rgba(148,163,184,.2);';
-    pill.textContent = text;
-    wrap.appendChild(pill);
-    msgList.appendChild(wrap);
+    var row = document.createElement('div');
+    row.style.cssText =
+      'padding:8px 16px;text-align:center;' +
+      'font-family:"Geist Mono",monospace;font-size:9px;font-weight:700;' +
+      'letter-spacing:0.16em;color:' + C_DIM + ';text-transform:uppercase;';
+    row.textContent = text;
+    msgList.appendChild(row);
     msgList.scrollTop = msgList.scrollHeight;
   }
 
@@ -532,32 +685,24 @@
     if (!msgList || document.getElementById('cb-typing')) return;
     var row = document.createElement('div');
     row.id = 'cb-typing';
-    row.style.cssText = 'display:flex;align-items:flex-end;gap:8px;margin:2px 0 6px;animation:cb-in .22s ease;';
+    row.style.cssText =
+      'padding:12px 16px;border-left:2px solid ' + C_WM + ';' +
+      'display:flex;align-items:center;gap:8px;background:transparent;flex-shrink:0;';
 
-    var av = document.createElement('div');
-    av.style.cssText =
-      'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
-      'display:flex;align-items:center;justify-content:center;font-size:14px;' +
-      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
-      'color:#fff;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.1);';
-    av.textContent = '\uD83E\uDD16';
+    var label = document.createElement('span');
+    label.textContent = 'GENERATING';
+    label.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:9px;font-weight:700;' +
+      'letter-spacing:0.2em;color:' + C_WM + ';text-transform:uppercase;';
 
-    var bubble = document.createElement('div');
-    bubble.style.cssText =
-      'padding:11px 15px;border-radius:4px 18px 18px 18px;' +
-      'background:#fff;border:1px solid #e8ecf0;' +
-      'box-shadow:0 1px 6px rgba(0,0,0,.07);' +
-      'display:flex;align-items:center;gap:5px;';
+    var cursor = document.createElement('span');
+    cursor.textContent = '\u2587';
+    cursor.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:13px;color:' + C_WM + ';' +
+      'animation:cb-blink 0.8s step-end infinite;';
 
-    for (var i = 0; i < 3; i++) {
-      var dot = document.createElement('span');
-      dot.style.cssText =
-        'width:7px;height:7px;border-radius:50%;background:#94a3b8;display:inline-block;' +
-        'animation:cb-bounce 1.2s ' + (i * .18) + 's infinite ease-in-out;';
-      bubble.appendChild(dot);
-    }
-    row.appendChild(av);
-    row.appendChild(bubble);
+    row.appendChild(label);
+    row.appendChild(cursor);
     msgList.appendChild(row);
     msgList.scrollTop = msgList.scrollHeight;
   }
@@ -573,7 +718,9 @@
     var d = document.createElement('div');
     d.className     = 'cb-status';
     d.textContent   = text;
-    d.style.cssText = 'text-align:center;color:#94a3b8;padding:14px;font-size:13px;font-style:italic;';
+    d.style.cssText =
+      'text-align:center;color:' + C_DIM + ';padding:14px;' +
+      'font-family:"Geist Mono",monospace;font-size:11px;font-style:italic;';
     msgList.appendChild(d);
   }
 
@@ -588,6 +735,9 @@
     var text = inputField && inputField.value && inputField.value.trim();
     if (!text) return;
     inputField.value = '';
+    inputField.style.height = 'auto';
+    updateCharCounter();
+    updateSendState();
     inputField.focus();
     resetInactivity();
     addMsg('user', text);
@@ -654,25 +804,30 @@
     var mid = data.message_id;
     if (!streamingMsgs[mid]) {
       removeTyping();
+      // Dismiss suggestions
+      if (suggestionsEl && suggestionsEl.parentNode) {
+        suggestionsEl.parentNode.removeChild(suggestionsEl);
+        suggestionsEl = null;
+      }
+      // Separator
+      var rows = msgList.querySelectorAll('.cb-msg-row');
+      if (rows.length > 0) {
+        var sep = document.createElement('div');
+        sep.style.cssText = 'height:1px;background:' + C_EDGE + ';flex-shrink:0;';
+        msgList.appendChild(sep);
+      }
       var row = document.createElement('div');
       row.id = 'cb-stream-' + mid;
-      row.style.cssText = 'display:flex;flex-direction:row;align-items:flex-end;gap:8px;margin:2px 0 6px;animation:cb-in .22s ease;';
-
-      var av = document.createElement('div');
-      av.style.cssText =
-        'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
-        'display:flex;align-items:center;justify-content:center;font-size:14px;' +
-        'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
-        'color:#fff;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.1);';
-      av.textContent = '\uD83E\uDD16';
+      row.className = 'cb-msg-row';
+      row.style.cssText =
+        'padding:12px 16px;border-left:2px solid ' + C_WM + ';' +
+        'background:transparent;transition:background 0.2s ease;';
 
       var bubble = document.createElement('div');
       bubble.style.cssText =
-        'padding:10px 14px;border-radius:4px 18px 18px 18px;max-width:72%;' +
-        'background:#fff;color:#1e293b;font-size:14px;line-height:1.55;word-break:break-word;' +
-        'box-shadow:0 1px 6px rgba(0,0,0,.07);border:1px solid #e8ecf0;';
+        'font-family:"Geist Mono",monospace;font-size:13.5px;font-weight:400;' +
+        'color:' + C_TEXT + ';line-height:1.75;word-break:break-word;';
 
-      row.appendChild(av);
       row.appendChild(bubble);
       msgList.appendChild(row);
       streamingMsgs[mid] = { bubble: bubble, text: '' };
@@ -688,21 +843,23 @@
     var s = streamingMsgs[mid];
     if (s) { msgQueue.push({ who: 'bot', text: s.text, time: Date.now() }); delete streamingMsgs[mid]; }
     setSendDisabled(false);
+    tokenCount = Math.min(tokenCount + 1, 5);
+    updateTokenDots();
   }
 
   // ── Staff ──────────────────────────────────────────────────────────────────
   function handleStaffJoined(data) {
     var name = data.staff_name || 'Agent';
-    addSysMsg('\uD83D\uDD04 ' + name + ' is connecting\u2026');
+    addSysMsg(name + ' IS CONNECTING\u2026');
     setTimeout(function() {
       var msgs = msgList.querySelectorAll('div');
       for (var i = 0; i < msgs.length; i++) {
-        if (msgs[i].textContent.indexOf('is connecting') !== -1) {
+        if (msgs[i].textContent.indexOf('IS CONNECTING') !== -1) {
           var par = msgs[i].parentNode;
           if (par) par.parentNode && par.parentNode.removeChild(par);
         }
       }
-      addSysMsg('\u2705 ' + (data.message || (name + ' has joined')));
+      addSysMsg(data.message || (name + ' HAS JOINED'));
       setTimeout(showTyping, 500);
     }, 900);
   }
@@ -710,43 +867,32 @@
   // ── Closure prompt ─────────────────────────────────────────────────────────
   function showClosurePrompt(data) {
     var row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:flex-end;gap:8px;margin:4px 0;animation:cb-in .22s ease;';
-
-    var av = document.createElement('div');
-    av.style.cssText =
-      'width:30px;height:30px;border-radius:50%;flex-shrink:0;' +
-      'display:flex;align-items:center;justify-content:center;font-size:14px;' +
-      'background:linear-gradient(135deg,' + COLOR + ',' + darken(COLOR,40) + ');' +
-      'color:#fff;border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.1);';
-    av.textContent = '\uD83E\uDD16';
-
-    var bubble = document.createElement('div');
-    bubble.style.cssText =
-      'padding:12px 14px;border-radius:4px 18px 18px 18px;max-width:72%;' +
-      'background:#fff;border:1px solid #e8ecf0;font-size:14px;color:#1e293b;';
+    row.style.cssText =
+      'padding:12px 16px;border-left:2px solid ' + C_EDGE + ';background:transparent;';
 
     var msg = document.createElement('div');
-    msg.textContent      = data.message;
-    msg.style.marginBottom = '10px';
-    bubble.appendChild(msg);
+    msg.textContent   = data.message;
+    msg.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:13px;color:' + C_TEXT + ';margin-bottom:10px;';
+    row.appendChild(msg);
 
     var btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
     var options = data.options || [];
     options.forEach(function(opt) {
       var b = document.createElement('button');
-      b.textContent   = opt.text;
+      b.textContent   = opt.text.toUpperCase();
       b.style.cssText =
-        'all:initial;padding:6px 16px;border-radius:999px;font-family:inherit;' +
-        'border:2px solid ' + COLOR + ';color:' + COLOR + ';font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;';
-      b.addEventListener('mouseenter', function() { b.style.background = COLOR; b.style.color = '#fff'; });
-      b.addEventListener('mouseleave', function() { b.style.background = 'transparent'; b.style.color = COLOR; });
+        'all:initial;padding:5px 14px;font-family:"Geist Mono",monospace;' +
+        'border:1px solid ' + C_EDGE + ';color:' + C_TEXT + ';' +
+        'font-size:9px;font-weight:700;letter-spacing:0.1em;cursor:pointer;' +
+        'transition:border-color 0.2s ease,color 0.2s ease;';
+      b.addEventListener('mouseenter', function() { b.style.borderColor = C_WM; b.style.color = C_WM; });
+      b.addEventListener('mouseleave', function() { b.style.borderColor = C_EDGE; b.style.color = C_TEXT; });
       b.addEventListener('click', function() { handleClosureChoice(opt.id, btns); });
       btns.appendChild(b);
     });
-    bubble.appendChild(btns);
-    row.appendChild(av);
-    row.appendChild(bubble);
+    row.appendChild(btns);
     msgList.appendChild(row);
     msgList.scrollTop = msgList.scrollHeight;
   }
@@ -823,15 +969,15 @@
 
   function applyMdStyles(el) {
     var pres = el.querySelectorAll('pre');
-    for (var i=0;i<pres.length;i++) pres[i].style.cssText='background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow-x:auto;margin:8px 0;font-size:12.5px;line-height:1.5;';
+    for (var i=0;i<pres.length;i++) pres[i].style.cssText='background:' + C_VOID + ';color:' + C_TEXT + ';padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.5;border:1px solid ' + C_EDGE + ';';
     var codes = el.querySelectorAll('code:not(pre code)');
-    for (var i=0;i<codes.length;i++) codes[i].style.cssText='background:#f1f5f9;color:#be185d;padding:2px 6px;border-radius:4px;font-size:12.5px;font-family:monospace;';
+    for (var i=0;i<codes.length;i++) codes[i].style.cssText='background:' + C_SURFACE + ';color:' + C_WM + ';padding:2px 5px;border-radius:3px;font-size:12px;font-family:"Geist Mono",monospace;';
     var lists = el.querySelectorAll('ul,ol');
     for (var i=0;i<lists.length;i++) lists[i].style.cssText='margin:6px 0;padding-left:18px;';
     var links = el.querySelectorAll('a');
-    for (var i=0;i<links.length;i++) links[i].style.cssText='color:'+COLOR+';text-decoration:underline;';
+    for (var i=0;i<links.length;i++) links[i].style.cssText='color:' + C_TEXT + ';text-decoration:underline;';
     var hdrs = el.querySelectorAll('h1,h2,h3');
-    for (var i=0;i<hdrs.length;i++) hdrs[i].style.cssText='margin:6px 0;font-weight:700;';
+    for (var i=0;i<hdrs.length;i++) hdrs[i].style.cssText='margin:6px 0;font-weight:700;font-family:"Geist Mono",monospace;';
     var ps = el.querySelectorAll('p');
     for (var i=0;i<ps.length;i++) ps[i].style.cssText='margin:4px 0;';
   }
@@ -841,19 +987,37 @@
   // ── Global styles ──────────────────────────────────────────────────────────
   function injectStyles() {
     if (document.getElementById('cb-global-styles')) return;
+
+    // Load Geist Mono from Google Fonts
+    var link  = document.createElement('link');
+    link.rel  = 'preconnect';
+    link.href = 'https://fonts.googleapis.com';
+    document.head.appendChild(link);
+    var link2       = document.createElement('link');
+    link2.rel       = 'stylesheet';
+    link2.href      = 'https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap';
+    document.head.appendChild(link2);
+
     var s    = document.createElement('style');
     s.id     = 'cb-global-styles';
     s.textContent =
-      '@keyframes cb-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}' +
-      '@keyframes cb-bounce{0%,60%,100%{transform:translateY(0);opacity:.45}30%{transform:translateY(-8px);opacity:1}}' +
-      '#cb-msgs::-webkit-scrollbar{width:4px}' +
+      '@keyframes cb-blink{0%,100%{opacity:1}50%{opacity:0}}' +
+      '@keyframes cb-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}' +
+      '#cb-msgs::-webkit-scrollbar{width:3px}' +
       '#cb-msgs::-webkit-scrollbar-track{background:transparent}' +
-      '#cb-msgs::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:99px}' +
-      '#cb-msgs::-webkit-scrollbar-thumb:hover{background:#94a3b8}';
+      '#cb-msgs::-webkit-scrollbar-thumb{background:' + C_EDGE + ';border-radius:0}' +
+      '#cb-msgs::-webkit-scrollbar-thumb:hover{background:' + C_DIM + '}' +
+      '#cb-suggestions div:focus{outline:none}' +
+      'textarea::-webkit-scrollbar{display:none}' +
+      '@media(max-width:480px){' +
+        '#cb-root{position:fixed!important;top:0!important;left:0!important;' +
+        'right:0!important;bottom:0!important;width:100%!important;' +
+        'height:100%!important;border-radius:0!important;border:none!important;}' +
+      '}';
     document.head.appendChild(s);
   }
 
-  // ── Color helpers ──────────────────────────────────────────────────────────
+  // ── Color helpers (kept for parseMarkdown/applyMdStyles compatibility) ─────
   function darken(hex, amount) {
     try {
       var r = Math.max(0, parseInt(hex.slice(1,3),16) - amount);
@@ -872,16 +1036,7 @@
     } catch(e) { return hex; }
   }
 
-  // ── Icons ──────────────────────────────────────────────────────────────────
-  function iconChat() {
-    return '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
-  }
-  function iconClose() {
-    return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-  }
-  function iconSend() {
-    return '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
-  }
+  // ── Icons (removed — text characters used instead) ────────────────────────
 
   // ── Cleanup ────────────────────────────────────────────────────────────────
   window.addEventListener('beforeunload', function() {
