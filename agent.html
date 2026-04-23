@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WM Studio — Agent Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --void:#0C0C0E;--panel:#141416;--surface:#1C1C1F;
+    --edge:#2A2A2E;--text:#E8E8EC;--dim:#5A5A62;--wm:#C8FF00;
+    font-family:'Geist Mono',monospace;
+  }
+  body{background:var(--void);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  /* ── Top bar ── */
+  #topbar{
+    height:44px;border-bottom:1px solid var(--edge);display:flex;align-items:center;
+    padding:0 20px;gap:16px;flex-shrink:0;background:var(--panel);
+  }
+  #topbar .brand{font-size:11px;font-weight:700;letter-spacing:.2em;color:var(--wm)}
+  #topbar .slash{color:var(--dim)}
+  #topbar .label{font-size:9px;font-weight:700;letter-spacing:.2em;color:var(--dim);text-transform:uppercase}
+  #status-dot{width:7px;height:7px;background:var(--edge);border-radius:50%;margin-left:auto;transition:.3s}
+  #status-dot.on{background:var(--wm)}
+  #status-text{font-size:9px;letter-spacing:.15em;color:var(--dim);text-transform:uppercase}
+
+  /* ── Auth overlay ── */
+  #auth-screen{
+    position:fixed;inset:0;background:var(--void);display:flex;
+    align-items:center;justify-content:center;z-index:100;
+  }
+  #auth-box{
+    background:var(--panel);border:1px solid var(--edge);padding:32px;
+    width:320px;display:flex;flex-direction:column;gap:14px;
+  }
+  #auth-box h2{font-size:11px;font-weight:700;letter-spacing:.2em;color:var(--wm);text-transform:uppercase}
+  #auth-box p{font-size:11px;color:var(--dim)}
+  #token-input{
+    background:var(--surface);border:1px solid var(--edge);color:var(--text);
+    font-family:inherit;font-size:13px;padding:9px 12px;outline:none;width:100%;
+  }
+  #token-input:focus{border-color:var(--wm)}
+  #auth-btn{
+    background:var(--wm);color:var(--void);border:none;font-family:inherit;
+    font-size:9px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+    padding:9px 16px;cursor:pointer;
+  }
+  #auth-btn:hover{opacity:.85}
+  #auth-err{font-size:10px;color:#ff5f5f;display:none}
+
+  /* ── Main layout ── */
+  #main{flex:1;display:flex;overflow:hidden}
+
+  /* ── Sessions sidebar ── */
+  #sidebar{
+    width:280px;border-right:1px solid var(--edge);display:flex;flex-direction:column;
+    flex-shrink:0;background:var(--panel);
+  }
+  #sidebar-header{
+    padding:12px 16px;border-bottom:1px solid var(--edge);
+    font-size:9px;font-weight:700;letter-spacing:.22em;color:var(--dim);text-transform:uppercase;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  #session-count{color:var(--wm)}
+  #session-list{flex:1;overflow-y:auto}
+  #session-list::-webkit-scrollbar{width:3px}
+  #session-list::-webkit-scrollbar-thumb{background:var(--edge)}
+
+  .session-item{
+    padding:12px 16px;border-bottom:1px solid var(--edge);cursor:pointer;
+    transition:background .15s;position:relative;
+  }
+  .session-item:hover{background:var(--surface)}
+  .session-item.active{background:var(--surface);border-left:2px solid var(--wm)}
+  .session-item .s-id{font-size:9px;color:var(--dim);letter-spacing:.1em;margin-bottom:4px}
+  .session-item .s-preview{font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .session-item .s-meta{font-size:9px;color:var(--dim);margin-top:4px;display:flex;gap:8px}
+  .session-item .s-dot{
+    position:absolute;top:14px;right:14px;width:6px;height:6px;
+    border-radius:50%;background:var(--edge);
+  }
+  .session-item .s-dot.online{background:var(--wm)}
+  #no-sessions{padding:24px 16px;font-size:11px;color:var(--dim);text-align:center;line-height:1.8}
+
+  /* ── Conversation panel ── */
+  #conv-panel{flex:1;display:flex;flex-direction:column;background:var(--panel)}
+  #conv-header{
+    padding:12px 20px;border-bottom:1px solid var(--edge);flex-shrink:0;
+    display:flex;align-items:center;gap:12px;
+  }
+  #conv-session-id{font-size:10px;color:var(--dim);letter-spacing:.1em}
+  #conv-badge{
+    font-size:8px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;
+    padding:2px 7px;border:1px solid var(--edge);color:var(--dim);
+  }
+  #conv-badge.online{border-color:var(--wm);color:var(--wm)}
+  #no-conv{
+    flex:1;display:flex;align-items:center;justify-content:center;
+    font-size:11px;color:var(--dim);text-align:center;line-height:2;
+  }
+  #messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:0}
+  #messages::-webkit-scrollbar{width:3px}
+  #messages::-webkit-scrollbar-thumb{background:var(--edge)}
+
+  .msg-row{padding:10px 0;border-bottom:1px solid var(--edge);position:relative}
+  .msg-row:last-child{border-bottom:none}
+  .msg-row .m-bar{position:absolute;left:0;top:0;bottom:0;width:2px}
+  .msg-row.user .m-bar{background:var(--edge)}
+  .msg-row.agent .m-bar{background:var(--wm)}
+  .msg-row .m-inner{padding-left:14px}
+  .msg-row .m-role{font-size:9px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+  .msg-row.user .m-role{color:var(--dim)}
+  .msg-row.agent .m-role{color:var(--wm)}
+  .msg-row .m-text{font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap;word-break:break-word}
+  .msg-row .m-ts{font-size:9px;color:var(--dim);margin-top:5px}
+
+  /* ── Reply area ── */
+  #reply-area{border-top:1px solid var(--edge);padding:14px 20px;flex-shrink:0;background:var(--panel)}
+  #reply-hint{font-size:9px;color:var(--dim);letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px}
+  #reply-wrap{display:flex;gap:10px;align-items:flex-end}
+  #reply-input{
+    flex:1;background:var(--surface);border:1px solid var(--edge);color:var(--text);
+    font-family:inherit;font-size:13px;padding:9px 12px;resize:none;outline:none;
+    min-height:40px;max-height:120px;overflow-y:auto;line-height:1.6;
+  }
+  #reply-input:focus{border-color:var(--wm)}
+  #reply-input::-webkit-scrollbar{width:0}
+  #send-btn{
+    background:var(--wm);color:var(--void);border:none;font-family:inherit;
+    font-size:9px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+    padding:9px 16px;cursor:pointer;flex-shrink:0;align-self:flex-end;
+  }
+  #send-btn:hover{opacity:.85}
+  #send-btn:disabled{background:var(--edge);color:var(--dim);cursor:not-allowed;opacity:1}
+  #reply-meta{font-size:9px;color:var(--dim);margin-top:6px;letter-spacing:.1em}
+</style>
+</head>
+<body>
+
+<!-- Auth overlay -->
+<div id="auth-screen">
+  <div id="auth-box">
+    <h2>WM Studio</h2>
+    <p>Agent Dashboard — enter your access token to continue.</p>
+    <input id="token-input" type="password" placeholder="Agent token..." autocomplete="off">
+    <div id="auth-err">Invalid token. Check your AGENT_TOKEN secret.</div>
+    <button id="auth-btn">CONNECT →</button>
+  </div>
+</div>
+
+<!-- Top bar -->
+<div id="topbar">
+  <span class="brand">WM STUDIO</span>
+  <span class="slash">/</span>
+  <span class="label">Agent Dashboard</span>
+  <span id="status-dot"></span>
+  <span id="status-text">DISCONNECTED</span>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      SESSIONS <span id="session-count">0</span>
+    </div>
+    <div id="session-list">
+      <div id="no-sessions">No active sessions yet.<br>Waiting for visitors...</div>
+    </div>
+  </div>
+
+  <div id="conv-panel">
+    <div id="no-conv">← Select a session<br>to view the conversation</div>
+    <div id="conv-header" style="display:none">
+      <span id="conv-session-id"></span>
+      <span id="conv-badge">OFFLINE</span>
+    </div>
+    <div id="messages" style="display:none"></div>
+    <div id="reply-area" style="display:none">
+      <div id="reply-hint">REPLY TO CUSTOMER</div>
+      <div id="reply-wrap">
+        <textarea id="reply-input" rows="1" placeholder="Type your reply..."></textarea>
+        <button id="send-btn" disabled>SEND ↵</button>
+      </div>
+      <div id="reply-meta">ENTER TO SEND · SHIFT+ENTER NEW LINE</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ── Config ──────────────────────────────────────────────────────────────
+  var isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var API_WS  = isLocal
+    ? 'ws://wm-chatbot-api.fly.dev/api/v1/ws/agent'
+    : 'wss://wm-chatbot-api.fly.dev/api/v1/ws/agent';
+
+  var ws          = null;
+  var token       = '';
+  var sessions    = {};   // session_id → summary
+  var histories   = {};   // session_id → [{role,text,ts}]
+  var activeId    = null;
+  var pingTimer   = null;
+
+  // ── DOM ──────────────────────────────────────────────────────────────────
+  var authScreen   = document.getElementById('auth-screen');
+  var tokenInput   = document.getElementById('token-input');
+  var authBtn      = document.getElementById('auth-btn');
+  var authErr      = document.getElementById('auth-err');
+  var statusDot    = document.getElementById('status-dot');
+  var statusText   = document.getElementById('status-text');
+  var sessionList  = document.getElementById('session-list');
+  var sessionCount = document.getElementById('session-count');
+  var noSessions   = document.getElementById('no-sessions');
+  var noConv       = document.getElementById('no-conv');
+  var convHeader   = document.getElementById('conv-header');
+  var convSid      = document.getElementById('conv-session-id');
+  var convBadge    = document.getElementById('conv-badge');
+  var messagesEl   = document.getElementById('messages');
+  var replyArea    = document.getElementById('reply-area');
+  var replyInput   = document.getElementById('reply-input');
+  var sendBtn      = document.getElementById('send-btn');
+
+  // ── Auth ─────────────────────────────────────────────────────────────────
+  authBtn.addEventListener('click', connect);
+  tokenInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') connect();
+  });
+
+  function connect() {
+    token = tokenInput.value.trim();
+    if (!token) return;
+    authErr.style.display = 'none';
+    authBtn.textContent = 'CONNECTING...';
+    authBtn.disabled = true;
+    openWS();
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────────────────
+  function openWS() {
+    if (ws) { try { ws.close(); } catch(e) {} }
+    ws = new WebSocket(API_WS + '?token=' + encodeURIComponent(token));
+
+    ws.onopen = function() {
+      statusDot.className = 'on';
+      statusText.textContent = 'CONNECTED';
+      authScreen.style.display = 'none';
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(function() {
+        if (ws && ws.readyState === WebSocket.OPEN)
+          ws.send(JSON.stringify({ type: 'ping' }));
+      }, 25000);
+    };
+
+    ws.onmessage = function(e) {
+      try { handleMsg(JSON.parse(e.data)); } catch(err) {}
+    };
+
+    ws.onclose = function(ev) {
+      statusDot.className = '';
+      statusText.textContent = 'DISCONNECTED';
+      if (pingTimer) clearInterval(pingTimer);
+      // If code 4401 = bad token
+      if (ev.code === 4401) {
+        authErr.style.display = 'block';
+        authBtn.textContent = 'CONNECT →';
+        authBtn.disabled = false;
+        authScreen.style.display = 'flex';
+      } else if (token) {
+        // Auto-reconnect after 3s
+        setTimeout(openWS, 3000);
+      }
+    };
+
+    ws.onerror = function() {
+      statusDot.className = '';
+      statusText.textContent = 'ERROR';
+    };
+  }
+
+  // ── Message handling ───────────────────────────────────────────────────────
+  function handleMsg(data) {
+    switch (data.type) {
+      case 'pong': break;
+
+      case 'init':
+        // Bulk load sessions + histories
+        (data.sessions || []).forEach(function(s) { sessions[s.session_id] = s; });
+        Object.keys(data.history || {}).forEach(function(sid) {
+          histories[sid] = data.history[sid];
+        });
+        renderSidebar();
+        break;
+
+      case 'session_update':
+        sessions[data.session.session_id] = data.session;
+        renderSidebar();
+        if (activeId === data.session.session_id) renderConvHeader();
+        break;
+
+      case 'customer_message':
+        if (!histories[data.session_id]) histories[data.session_id] = [];
+        // Avoid duplicates (server already stored it)
+        var last = histories[data.session_id].slice(-1)[0];
+        if (!last || last.text !== data.text || last.role !== 'user') {
+          histories[data.session_id].push({ role: 'user', text: data.text, ts: data.ts });
+        }
+        sessions[data.session_id] = data.session;
+        renderSidebar();
+        if (activeId === data.session_id) renderMessages(true);
+        // Flash sidebar item
+        flashSession(data.session_id);
+        break;
+
+      case 'agent_reply_echo':
+        if (!histories[data.session_id]) histories[data.session_id] = [];
+        var last2 = histories[data.session_id].slice(-1)[0];
+        if (!last2 || last2.text !== data.text || last2.role !== 'assistant') {
+          histories[data.session_id].push({ role: 'assistant', text: data.text, ts: data.ts });
+        }
+        if (activeId === data.session_id) renderMessages(true);
+        break;
+    }
+  }
+
+  // ── Sidebar ────────────────────────────────────────────────────────────────
+  function renderSidebar() {
+    var ids = Object.keys(sessions).sort(function(a, b) {
+      return (sessions[b].last_ts || 0) - (sessions[a].last_ts || 0);
+    });
+    sessionCount.textContent = ids.length;
+    if (!ids.length) { sessionList.innerHTML = ''; sessionList.appendChild(noSessions); return; }
+
+    sessionList.innerHTML = '';
+    ids.forEach(function(sid) {
+      var s   = sessions[sid];
+      var div = document.createElement('div');
+      div.className = 'session-item' + (sid === activeId ? ' active' : '');
+      div.dataset.sid = sid;
+
+      var shortId = sid.replace('sess_','').slice(0,12);
+      var preview = s.last_text || '(no messages yet)';
+      var time    = s.last_ts ? new Date(s.last_ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
+      var count   = s.message_count;
+
+      div.innerHTML =
+        '<div class="s-dot' + (s.online ? ' online' : '') + '"></div>' +
+        '<div class="s-id">' + shortId + '</div>' +
+        '<div class="s-preview">' + escHtml(preview) + '</div>' +
+        '<div class="s-meta"><span>' + count + ' msgs</span><span>' + time + '</span></div>';
+
+      div.addEventListener('click', function() { selectSession(sid); });
+      sessionList.appendChild(div);
+    });
+  }
+
+  function flashSession(sid) {
+    var el = sessionList.querySelector('[data-sid="' + sid + '"]');
+    if (el && sid !== activeId) {
+      el.style.borderLeft = '2px solid var(--wm)';
+      setTimeout(function() { if (el) el.style.borderLeft = ''; }, 2000);
+    }
+  }
+
+  // ── Conversation view ──────────────────────────────────────────────────────
+  function selectSession(sid) {
+    activeId = sid;
+    renderSidebar();
+    renderConvHeader();
+    renderMessages(false);
+    noConv.style.display      = 'none';
+    convHeader.style.display  = 'flex';
+    messagesEl.style.display  = 'flex';
+    replyArea.style.display   = 'block';
+    replyInput.value = '';
+    updateSendBtn();
+    replyInput.focus();
+  }
+
+  function renderConvHeader() {
+    if (!activeId) return;
+    var s = sessions[activeId] || {};
+    convSid.textContent = activeId;
+    convBadge.textContent = s.online ? 'ONLINE' : 'OFFLINE';
+    convBadge.className   = 'conv-badge' + (s.online ? ' online' : '');
+    convBadge.id          = 'conv-badge';
+  }
+
+  function renderMessages(scrollToBottom) {
+    if (!activeId) return;
+    var msgs = histories[activeId] || [];
+    messagesEl.innerHTML = '';
+    msgs.forEach(function(m) {
+      var isAgent = m.role === 'assistant';
+      var row = document.createElement('div');
+      row.className = 'msg-row ' + (isAgent ? 'agent' : 'user');
+      var time = m.ts ? new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}) : '';
+      row.innerHTML =
+        '<div class="m-bar"></div>' +
+        '<div class="m-inner">' +
+          '<div class="m-role">' + (isAgent ? 'AGENT' : 'VISITOR') + '</div>' +
+          '<div class="m-text">' + escHtml(m.text) + '</div>' +
+          '<div class="m-ts">' + time + '</div>' +
+        '</div>';
+      messagesEl.appendChild(row);
+    });
+    if (!msgs.length) {
+      messagesEl.innerHTML = '<div style="padding:20px 0;font-size:11px;color:var(--dim)">No messages yet.</div>';
+    }
+    if (scrollToBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+    else messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ── Reply ──────────────────────────────────────────────────────────────────
+  replyInput.addEventListener('input', function() {
+    // Auto-resize
+    replyInput.style.height = 'auto';
+    replyInput.style.height = Math.min(replyInput.scrollHeight, 120) + 'px';
+    updateSendBtn();
+    // Send typing indicator
+    if (ws && ws.readyState === WebSocket.OPEN && activeId) {
+      ws.send(JSON.stringify({ type: 'typing', session_id: activeId }));
+    }
+  });
+
+  replyInput.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendReply(); }
+  });
+
+  sendBtn.addEventListener('click', sendReply);
+
+  function updateSendBtn() {
+    sendBtn.disabled = !replyInput.value.trim() || !activeId;
+  }
+
+  function sendReply() {
+    var text = replyInput.value.trim();
+    if (!text || !activeId || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'agent_reply', session_id: activeId, text: text }));
+    replyInput.value = '';
+    replyInput.style.height = 'auto';
+    updateSendBtn();
+    replyInput.focus();
+  }
+
+  // ── Util ──────────────────────────────────────────────────────────────────
+  function escHtml(t) {
+    return String(t)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/\n/g,'<br>');
+  }
+})();
+</script>
+</body>
+</html>

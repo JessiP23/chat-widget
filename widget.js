@@ -334,13 +334,13 @@
     headerLeft.style.cssText = 'display:flex;align-items:center;';
 
     var brandWm = document.createElement('span');
-    brandWm.textContent = 'WM STUDIO';
+    brandWm.textContent = (COMPANY || 'Support').toUpperCase();
     brandWm.style.cssText =
       'font-size:9px;font-weight:700;letter-spacing:0.2em;color:' + C_WM + ';' +
       'text-transform:uppercase;font-family:"Geist Mono",monospace;';
 
     var brandSlash = document.createElement('span');
-    brandSlash.textContent = ' / ASSISTANT';
+    brandSlash.textContent = ' / LIVE CHAT';
     brandSlash.style.cssText =
       'font-size:9px;font-weight:700;letter-spacing:0.2em;color:' + C_DIM + ';' +
       'text-transform:uppercase;font-family:"Geist Mono",monospace;';
@@ -394,11 +394,11 @@
     suggestionsEl.style.cssText =
       'display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:16px;';
 
-    var suggestions = [
-      { label: 'IMAGES', text: 'Generate a cinematic portrait' },
-      { label: 'VIDEOS', text: 'Create a 5-second product clip' },
-      { label: 'TOOLS',  text: 'Upscale my last image to 4K' },
-      { label: 'HELP',   text: 'How do credits work?' },
+    var suggestions = cfg.suggestions || [
+      { label: 'ACCOUNT', text: 'I need help with my account' },
+      { label: 'BILLING', text: 'I have a question about billing' },
+      { label: 'BUG',     text: 'Something is not working properly' },
+      { label: 'OTHER',   text: 'I have a general question' },
     ];
     suggestions.forEach(function(sg) {
       var tile = document.createElement('div');
@@ -455,7 +455,7 @@
     charRow.appendChild(charCounter);
 
     inputField = document.createElement('textarea');
-    inputField.placeholder  = 'Ask about images, videos, tools\u2026';
+    inputField.placeholder  = cfg.inputPlaceholder || 'Type your message\u2026';
     inputField.autocomplete = 'off';
     inputField.rows = 1;
     inputField.style.cssText =
