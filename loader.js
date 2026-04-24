@@ -1,30 +1,3 @@
-/**
- * WM Studio Chatbot Loader
- * Lightweight (~1.5 KB) parent-side embed script.
- *
- * ── Production usage on wmstudio.io (add before </body>) ──────────────────
- *
- *   <script>
- *     window.__CHATBOT_CONFIG = {
- *       widgetUrl:      'https://wm-chatbot.fly.dev/embed.html',
- *       apiUrl:         'https://chat-widget.fly.dev/api/v1',
- *       primaryColor:   '#6366f1',
- *       companyName:    'WM Studio',
- *       welcomeMessage: 'Hi! How can I help you today?',
- *       tenantId:       'your-tenant-id',  // optional
- *     };
- *   </script>
- *   <script src="https://wm-chatbot.fly.dev/loader.js" defer></script>
- *
- * ── Local development (localhost) ─────────────────────────────────────────
- *   1. In your terminal: cd /path/to/chatbot && python3 -m http.server 3000
- *   2. Use widgetUrl: 'http://localhost:3000/embed.html'
- *
- * Programmatic control (after load):
- *   ChatbotLoader.open()   – open the widget
- *   ChatbotLoader.close()  – close/hide the widget
- *   ChatbotLoader.toggle() – toggle open/close
- */
 (function () {
   'use strict';
 
@@ -32,7 +5,7 @@
 
   // widgetUrl must point to wherever embed.html is hosted.
   // Auto-detect localhost vs production
-  var isLocal    = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   var WIDGET_URL = CFG.widgetUrl || (isLocal
     ? 'http://localhost:3000/embed.html'
     : 'https://chat-widget.fly.dev/embed.html');
@@ -42,11 +15,11 @@
     var p = new URLSearchParams();
     // Always pass apiUrl — fall back to the deployed backend
     p.set('apiUrl', CFG.apiUrl || 'https://chat-widget.fly.dev/api/v1');
-    if (CFG.primaryColor)   p.set('primaryColor',   CFG.primaryColor);
-    if (CFG.companyName)    p.set('companyName',     CFG.companyName);
-    if (CFG.welcomeMessage) p.set('welcomeMessage',  CFG.welcomeMessage);
-    if (CFG.tenantId)       p.set('tenantId',        CFG.tenantId);
-    if (CFG.theme)          p.set('theme',           CFG.theme);
+    if (CFG.primaryColor) p.set('primaryColor', CFG.primaryColor);
+    if (CFG.companyName) p.set('companyName', CFG.companyName);
+    if (CFG.welcomeMessage) p.set('welcomeMessage', CFG.welcomeMessage);
+    if (CFG.tenantId) p.set('tenantId', CFG.tenantId);
+    if (CFG.theme) p.set('theme', CFG.theme);
     return WIDGET_URL + '?' + p.toString();
   }
 
@@ -188,8 +161,8 @@
 
   // ── Public API ────────────────────────────────────────────────────────────
   window.ChatbotLoader = {
-    open:   function () { show(); },
-    close:  function () { hide(); },
+    open: function () { show(); },
+    close: function () { hide(); },
     toggle: function () { toggle(); },
     isOpen: function () { return isVisible; },
   };

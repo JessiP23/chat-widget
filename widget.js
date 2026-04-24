@@ -1,46 +1,46 @@
 (function () {
   'use strict';
 
-  var _isLocal  = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  var _isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
   var _backendUrl = 'https://wm-chatbot-api.fly.dev/api/v1';
   var defaultCfg = {
-    apiUrl:         _isLocal ? _backendUrl : (location.origin + '/api/v1'),
-    primaryColor:   '#C8FF00',
-    position:       'bottom-right',
+    apiUrl: _isLocal ? _backendUrl : (location.origin + '/api/v1'),
+    primaryColor: '#C8FF00',
+    position: 'bottom-right',
     welcomeMessage: 'Hi! How can I help you today?',
-    companyName:    'Support',
+    companyName: 'Support',
   };
 
-  var cfg       = Object.assign({}, defaultCfg, window.__CHATBOT_CONFIG || {});
-  var API       = cfg.apiUrl;
-  var COLOR     = cfg.primaryColor;
-  var POS       = cfg.position;
-  var WELCOME   = cfg.welcomeMessage;
-  var COMPANY   = cfg.companyName;
+  var cfg = Object.assign({}, defaultCfg, window.__CHATBOT_CONFIG || {});
+  var API = cfg.apiUrl;
+  var COLOR = cfg.primaryColor;
+  var POS = cfg.position;
+  var WELCOME = cfg.welcomeMessage;
+  var COMPANY = cfg.companyName;
   var TENANT_ID = cfg.tenantId || cfg.tenant_id || null;
 
   // ── Design tokens ──────────────────────────────────────────────────────────
-  var C_VOID    = '#0C0C0E';
-  var C_PANEL   = '#141416';
+  var C_VOID = '#0C0C0E';
+  var C_PANEL = '#141416';
   var C_SURFACE = '#1C1C1F';
-  var C_EDGE    = '#2A2A2E';
-  var C_TEXT    = '#E8E8EC';
-  var C_DIM     = '#5A5A62';
-  var C_WM      = '#C8FF00';
+  var C_EDGE = '#2A2A2E';
+  var C_TEXT = '#E8E8EC';
+  var C_DIM = '#5A5A62';
+  var C_WM = '#f97316';
 
   // Runtime state
-  var sessionId        = null;
-  var ws               = null;
+  var sessionId = null;
+  var ws = null;
   var wsReconnectDelay = 1000;
-  var isOpen           = false;
-  var isConnecting     = false;
-  var isDisconnecting  = false;
-  var wsPingInterval   = null;
-  var inactivityTimer  = null;
-  var streamingMsgs    = {};
-  var msgQueue         = [];
-  var currentMode      = 'GENERAL';
-  var tokenCount       = 0;
+  var isOpen = false;
+  var isConnecting = false;
+  var isDisconnecting = false;
+  var wsPingInterval = null;
+  var inactivityTimer = null;
+  var streamingMsgs = {};
+  var msgQueue = [];
+  var currentMode = 'GENERAL';
+  var tokenCount = 0;
 
   // DOM refs
   var container, msgList, inputField, sendBtn, statusDot, statusText;
@@ -48,21 +48,21 @@
 
   // ── Public API ─────────────────────────────────────────────────────────────
   window.ChatbotSDK = {
-    init: function(c) {
+    init: function (c) {
       if (!c) return;
-      cfg       = Object.assign(cfg, c);
-      API       = cfg.apiUrl        || API;
-      COLOR     = cfg.primaryColor  || COLOR;
-      POS       = cfg.position      || POS;
-      WELCOME   = cfg.welcomeMessage || WELCOME;
-      COMPANY   = cfg.companyName   || COMPANY;
+      cfg = Object.assign(cfg, c);
+      API = cfg.apiUrl || API;
+      COLOR = cfg.primaryColor || COLOR;
+      POS = cfg.position || POS;
+      WELCOME = cfg.welcomeMessage || WELCOME;
+      COMPANY = cfg.companyName || COMPANY;
       TENANT_ID = cfg.tenantId || cfg.tenant_id || TENANT_ID;
     },
-    open:       function() { openChat(); },
-    close:      function() { closeChat(); },
-    toggle:     function() { isOpen ? closeChat() : openChat(); },
-    isOpen:     function() { return isOpen; },
-    getSession: function() { return sessionId; },
+    open: function () { openChat(); },
+    close: function () { closeChat(); },
+    toggle: function () { isOpen ? closeChat() : openChat(); },
+    isOpen: function () { return isOpen; },
+    getSession: function () { return sessionId; },
   };
 
   // ── Boot ───────────────────────────────────────────────────────────────────
@@ -71,7 +71,7 @@
     if (inIframe) {
       // Inside embed.html — build UI filling the entire iframe
       buildUI(true);
-      startSession(function() {
+      startSession(function () {
         if (msgList && msgList.children.length === 0) addMsg('bot', WELCOME);
       });
     } else {
@@ -96,18 +96,18 @@
 
   function openWebSocket(cb) {
     if (ws && ws.readyState === WebSocket.OPEN) { if (cb) cb(true); return; }
-    if (ws) { try { ws.close(); } catch(e) {} ws = null; }
+    if (ws) { try { ws.close(); } catch (e) { } ws = null; }
     if (isConnecting) { if (cb) cb(false); return; }
 
     isConnecting = true;
     setStatus('connecting');
 
-    var base   = API.replace(/^http/, 'ws');
+    var base = API.replace(/^http/, 'ws');
     var params = 'session_id=' + encodeURIComponent(sessionId);
     if (TENANT_ID) params += '&tenant_id=' + encodeURIComponent(TENANT_ID);
     var url = base + '/ws/chat?' + params;
 
-    var giveUp = setTimeout(function() {
+    var giveUp = setTimeout(function () {
       isConnecting = false;
       setStatus('offline');
       if (cb) cb(false);
@@ -117,24 +117,24 @@
     try {
       ws = new WebSocket(url);
 
-      ws.onopen = function() {
+      ws.onopen = function () {
         clearTimeout(giveUp);
-        isConnecting     = false;
+        isConnecting = false;
         wsReconnectDelay = 1000;
         setStatus('online');
         if (wsPingInterval) clearInterval(wsPingInterval);
-        wsPingInterval = setInterval(function() {
+        wsPingInterval = setInterval(function () {
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
         }, 20000);
         if (cb) { cb(true); cb = null; }
       };
 
-      ws.onmessage = function(e) {
+      ws.onmessage = function (e) {
         try { handleWsMsg(JSON.parse(e.data)); }
-        catch(err) { console.error('[Chatbot] WS parse error', err); }
+        catch (err) { console.error('[Chatbot] WS parse error', err); }
       };
 
-      ws.onerror = function(err) {
+      ws.onerror = function (err) {
         clearTimeout(giveUp);
         console.error('[Chatbot] WS error:', err);
         isConnecting = false;
@@ -142,19 +142,19 @@
         if (cb) { cb(false); cb = null; }
       };
 
-      ws.onclose = function() {
+      ws.onclose = function () {
         isConnecting = false;
         ws = null;
         if (wsPingInterval) { clearInterval(wsPingInterval); wsPingInterval = null; }
         if (!isDisconnecting && isOpen && sessionId) {
           setStatus('connecting');
           wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
-          setTimeout(function() { openWebSocket(null); }, wsReconnectDelay);
+          setTimeout(function () { openWebSocket(null); }, wsReconnectDelay);
         } else {
           setStatus('offline');
         }
       };
-    } catch(err) {
+    } catch (err) {
       clearTimeout(giveUp);
       isConnecting = false;
       setStatus('offline');
@@ -211,11 +211,11 @@
       'transition:border-color 0.25s ease,background 0.25s ease,color 0.25s ease,letter-spacing 0.25s ease;';
     btn.textContent = 'WM';
 
-    btn.addEventListener('mouseenter', function() {
+    btn.addEventListener('mouseenter', function () {
       if (!isOpen) { btn.style.borderColor = C_WM; }
       btn.style.letterSpacing = '0.12em';
     });
-    btn.addEventListener('mouseleave', function() {
+    btn.addEventListener('mouseleave', function () {
       if (!isOpen) { btn.style.borderColor = C_EDGE; }
       btn.style.letterSpacing = '0.06em';
     });
@@ -240,13 +240,13 @@
   function openChat() {
     if (!container) buildUI(false);
     container.style.display = 'flex';
-    requestAnimationFrame(function() {
-      container.style.opacity   = '0';
+    requestAnimationFrame(function () {
+      container.style.opacity = '0';
       container.style.transform = 'translateY(8px)';
-      requestAnimationFrame(function() {
+      requestAnimationFrame(function () {
         container.style.transition = 'opacity 0.3s cubic-bezier(0.16,1,0.3,1),transform 0.3s cubic-bezier(0.16,1,0.3,1)';
-        container.style.opacity    = '1';
-        container.style.transform  = 'translateY(0)';
+        container.style.opacity = '1';
+        container.style.transform = 'translateY(0)';
       });
     });
     isOpen = true;
@@ -254,7 +254,7 @@
 
     if (!sessionId) {
       showStatusMsg('Connecting\u2026');
-      startSession(function(ok) {
+      startSession(function (ok) {
         clearStatusMsgs();
         if (!ok) showStatusMsg('\u26a0\ufe0f Could not connect. Please refresh.');
         else if (msgList && msgList.querySelectorAll('.cb-msg-row').length === 0) addMsg('bot', WELCOME);
@@ -263,32 +263,32 @@
       if (msgList && msgList.querySelectorAll('.cb-msg-row').length === 0) addMsg('bot', WELCOME);
     }
 
-    setTimeout(function() { if (inputField) inputField.focus(); }, 120);
+    setTimeout(function () { if (inputField) inputField.focus(); }, 120);
   }
 
   function closeChat() {
     if (!container) return;
     generateInsight(); // summarise + clear before closing
     container.style.transition = 'opacity 0.3s cubic-bezier(0.16,1,0.3,1),transform 0.3s cubic-bezier(0.16,1,0.3,1)';
-    container.style.opacity   = '0';
+    container.style.opacity = '0';
     container.style.transform = 'translateY(8px)';
-    setTimeout(function() { if (container) container.style.display = 'none'; }, 300);
+    setTimeout(function () { if (container) container.style.display = 'none'; }, 300);
     isOpen = false;
     updateLauncherIcon(false);
     if (window.parent !== window) window.parent.postMessage({ type: 'chatbot:close' }, '*');
   }
 
   function updateLauncherIcon(open) {
-    var btn   = document.getElementById('cb-launcher');
+    var btn = document.getElementById('cb-launcher');
     var label = document.getElementById('cb-launcher-label');
     if (!btn) return;
     if (open) {
-      btn.style.background  = C_WM;
-      btn.style.color       = C_VOID;
+      btn.style.background = C_WM;
+      btn.style.color = C_VOID;
       btn.style.borderColor = C_WM;
     } else {
-      btn.style.background  = C_PANEL;
-      btn.style.color       = C_WM;
+      btn.style.background = C_PANEL;
+      btn.style.color = C_WM;
       btn.style.borderColor = C_EDGE;
     }
     if (label) label.style.opacity = open ? '0' : '1';
@@ -298,7 +298,7 @@
   function buildUI(iframeMode) {
     injectStyles();
 
-    container    = document.createElement('div');
+    container = document.createElement('div');
     container.id = 'cb-root';
 
     if (iframeMode) {
@@ -363,10 +363,10 @@
       'display:flex;align-items:center;justify-content:center;' +
       'transition:color 0.2s ease;';
     closeBtn.textContent = '\xD7';
-    closeBtn.addEventListener('mouseenter', function() { closeBtn.style.color = C_TEXT; });
-    closeBtn.addEventListener('mouseleave', function() { closeBtn.style.color = C_DIM; });
+    closeBtn.addEventListener('mouseenter', function () { closeBtn.style.color = C_TEXT; });
+    closeBtn.addEventListener('mouseleave', function () { closeBtn.style.color = C_DIM; });
     closeBtn.addEventListener('click', iframeMode
-      ? function() { window.parent.postMessage({ type: 'chatbot:close' }, '*'); }
+      ? function () { window.parent.postMessage({ type: 'chatbot:close' }, '*'); }
       : closeChat);
 
     headerRight.appendChild(tokenDotsEl);
@@ -381,7 +381,7 @@
       'background:' + C_PANEL + ';';
 
     // ── Message area ──────────────────────────────────────────────────────────
-    msgList    = document.createElement('div');
+    msgList = document.createElement('div');
     msgList.id = 'cb-msgs';
     msgList.style.cssText =
       'flex:1;overflow-y:auto;' +
@@ -397,10 +397,10 @@
     var suggestions = cfg.suggestions || [
       { label: 'ACCOUNT', text: 'I need help with my account' },
       { label: 'BILLING', text: 'I have a question about billing' },
-      { label: 'BUG',     text: 'Something is not working properly' },
-      { label: 'OTHER',   text: 'I have a general question' },
+      { label: 'BUG', text: 'Something is not working properly' },
+      { label: 'OTHER', text: 'I have a general question' },
     ];
-    suggestions.forEach(function(sg) {
+    suggestions.forEach(function (sg) {
       var tile = document.createElement('div');
       tile.style.cssText =
         'background:' + C_SURFACE + ';border:1px solid ' + C_EDGE + ';border-radius:6px;' +
@@ -417,15 +417,15 @@
         'font-size:11px;color:' + C_TEXT + ';line-height:1.5;font-family:"Geist Mono",monospace;';
       tile.appendChild(tlabel);
       tile.appendChild(ttext);
-      tile.addEventListener('mouseenter', function() {
+      tile.addEventListener('mouseenter', function () {
         tile.style.borderColor = C_WM;
-        tlabel.style.color     = C_WM;
+        tlabel.style.color = C_WM;
       });
-      tile.addEventListener('mouseleave', function() {
+      tile.addEventListener('mouseleave', function () {
         tile.style.borderColor = C_EDGE;
-        tlabel.style.color     = C_DIM;
+        tlabel.style.color = C_DIM;
       });
-      tile.addEventListener('click', function() {
+      tile.addEventListener('click', function () {
         if (inputField) {
           inputField.value = sg.text;
           inputField.style.height = 'auto';
@@ -455,7 +455,7 @@
     charRow.appendChild(charCounter);
 
     inputField = document.createElement('textarea');
-    inputField.placeholder  = cfg.inputPlaceholder || 'Type your message\u2026';
+    inputField.placeholder = cfg.inputPlaceholder || 'Type your message\u2026';
     inputField.autocomplete = 'off';
     inputField.rows = 1;
     inputField.style.cssText =
@@ -466,15 +466,15 @@
       'outline:none;max-height:120px;scrollbar-width:none;' +
       'transition:border-color 0.2s ease;';
 
-    inputField.addEventListener('focus', function() { inputField.style.borderColor = C_WM; });
-    inputField.addEventListener('blur',  function() { inputField.style.borderColor = C_EDGE; });
-    inputField.addEventListener('input', function() {
+    inputField.addEventListener('focus', function () { inputField.style.borderColor = C_WM; });
+    inputField.addEventListener('blur', function () { inputField.style.borderColor = C_EDGE; });
+    inputField.addEventListener('input', function () {
       inputField.style.height = 'auto';
       inputField.style.height = Math.min(inputField.scrollHeight, 120) + 'px';
       updateCharCounter();
       updateSendState();
     });
-    inputField.addEventListener('keydown', function(e) {
+    inputField.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
     });
 
@@ -496,10 +496,10 @@
       'font-family:"Geist Mono",monospace;font-size:9px;font-weight:700;' +
       'letter-spacing:0.1em;text-transform:uppercase;border:none;' +
       'transition:opacity 0.2s ease,background 0.2s ease,color 0.2s ease;';
-    sendBtn.addEventListener('mouseenter', function() {
+    sendBtn.addEventListener('mouseenter', function () {
       if (sendBtn.style.background !== C_EDGE) sendBtn.style.opacity = '0.85';
     });
-    sendBtn.addEventListener('mouseleave', function() { sendBtn.style.opacity = '1'; });
+    sendBtn.addEventListener('mouseleave', function () { sendBtn.style.opacity = '1'; });
     sendBtn.addEventListener('click', doSend);
 
     toolbar.appendChild(hint);
@@ -539,27 +539,27 @@
     if (!sendBtn || !inputField) return;
     var empty = !(inputField.value || '').trim();
     sendBtn.style.background = empty ? C_EDGE : C_WM;
-    sendBtn.style.color      = empty ? C_DIM  : C_VOID;
-    sendBtn.style.cursor     = empty ? 'default' : 'pointer';
+    sendBtn.style.color = empty ? C_DIM : C_VOID;
+    sendBtn.style.cursor = empty ? 'default' : 'pointer';
   }
 
   // ── Draggable (standalone) ─────────────────────────────────────────────────
   function makeDraggable(handle, el) {
     var ox = 0, oy = 0, drag = false;
-    handle.addEventListener('mousedown', function(e) {
+    handle.addEventListener('mousedown', function (e) {
       if (e.target.closest && e.target.closest('button')) return;
       drag = true;
       var r = el.getBoundingClientRect();
       ox = e.clientX - r.left; oy = e.clientY - r.top;
       e.preventDefault();
     });
-    document.addEventListener('mousemove', function(e) {
+    document.addEventListener('mousemove', function (e) {
       if (!drag) return;
-      el.style.left   = Math.max(0, Math.min(e.clientX - ox, window.innerWidth  - el.offsetWidth))  + 'px';
-      el.style.top    = Math.max(0, Math.min(e.clientY - oy, window.innerHeight - el.offsetHeight)) + 'px';
-      el.style.right  = 'auto'; el.style.bottom = 'auto';
+      el.style.left = Math.max(0, Math.min(e.clientX - ox, window.innerWidth - el.offsetWidth)) + 'px';
+      el.style.top = Math.max(0, Math.min(e.clientY - oy, window.innerHeight - el.offsetHeight)) + 'px';
+      el.style.right = 'auto'; el.style.bottom = 'auto';
     });
-    document.addEventListener('mouseup', function() { drag = false; });
+    document.addEventListener('mouseup', function () { drag = false; });
   }
 
   // ── Status ─────────────────────────────────────────────────────────────────
@@ -585,9 +585,9 @@
     tokenCount = Math.min(tokenCount + 1, 5);
     updateTokenDots();
 
-    var isUser  = who === 'user';
+    var isUser = who === 'user';
     var isStaff = who === 'staff';
-    var time    = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+    var time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     // Separator between message pairs
     var rows = msgList.querySelectorAll('.cb-msg-row');
@@ -609,21 +609,21 @@
     copyEl.style.cssText =
       'font-family:"Geist Mono",monospace;font-size:9px;color:' + C_DIM + ';' +
       'cursor:pointer;opacity:0;transition:opacity 0.15s ease;letter-spacing:0.1em;';
-    copyEl.addEventListener('click', function(e) {
+    copyEl.addEventListener('click', function (e) {
       e.stopPropagation();
       try {
         navigator.clipboard.writeText(text);
         copyEl.textContent = 'COPIED';
-        setTimeout(function() { copyEl.textContent = 'COPY'; }, 1200);
-      } catch(ex) {}
+        setTimeout(function () { copyEl.textContent = 'COPY'; }, 1200);
+      } catch (ex) { }
     });
 
-    row.addEventListener('mouseenter', function() { row.style.background = C_SURFACE; copyEl.style.opacity = '1'; });
-    row.addEventListener('mouseleave', function() { row.style.background = 'transparent'; copyEl.style.opacity = '0'; });
+    row.addEventListener('mouseenter', function () { row.style.background = C_SURFACE; copyEl.style.opacity = '1'; });
+    row.addEventListener('mouseleave', function () { row.style.background = 'transparent'; copyEl.style.opacity = '0'; });
 
     if (isStaff && staffName) {
       var nm = document.createElement('div');
-      nm.textContent   = staffName.toUpperCase();
+      nm.textContent = staffName.toUpperCase();
       nm.style.cssText =
         'font-size:8px;font-weight:700;letter-spacing:0.22em;color:' + C_DIM + ';' +
         'margin-bottom:5px;font-family:"Geist Mono",monospace;';
@@ -650,7 +650,7 @@
       'margin-top:5px;gap:12px;';
 
     var ts = document.createElement('span');
-    ts.textContent   = time;
+    ts.textContent = time;
     ts.style.cssText = 'font-family:"Geist Mono",monospace;font-size:10px;color:' + C_DIM + ';';
 
     if (isUser) {
@@ -714,8 +714,8 @@
   function showStatusMsg(text) {
     if (!msgList) return;
     var d = document.createElement('div');
-    d.className     = 'cb-status';
-    d.textContent   = text;
+    d.className = 'cb-status';
+    d.textContent = text;
     d.style.cssText =
       'text-align:center;color:' + C_DIM + ';padding:14px;' +
       'font-family:"Geist Mono",monospace;font-size:11px;font-style:italic;';
@@ -743,7 +743,7 @@
     setSendDisabled(true);
 
     if (!sessionId) {
-      startSession(function(ok) {
+      startSession(function (ok) {
         if (ok) { trySend(text); }
         else {
           removeTyping();
@@ -759,7 +759,7 @@
   function trySend(text) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       // Send full history so backend stays stateless — browser owns the conversation
-      var history = msgQueue.map(function(m) {
+      var history = msgQueue.map(function (m) {
         return { role: m.who === 'user' ? 'user' : 'assistant', content: m.text };
       });
       ws.send(JSON.stringify({ type: 'chat_message', text: text, session_id: sessionId, tenant_id: TENANT_ID, history: history }));
@@ -773,35 +773,35 @@
   function setSendDisabled(v) {
     if (!sendBtn) return;
     sendBtn.style.opacity = v ? '.45' : '1';
-    sendBtn.style.cursor  = v ? 'not-allowed' : 'pointer';
+    sendBtn.style.cursor = v ? 'not-allowed' : 'pointer';
   }
 
   function sendREST(text) {
-    var history = msgQueue.map(function(m) {
+    var history = msgQueue.map(function (m) {
       return { role: m.who === 'user' ? 'user' : 'assistant', content: m.text };
     });
     fetch(API + '/conversations', {
-      method:  'POST',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tenant_id: TENANT_ID, session_id: sessionId, user_message: text, history: history }),
     })
-    .then(function(res) {
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return res.json();
-    })
-    .then(function(data) {
-      var msg = data.bot_response || data.text || data.message || "I didn\u2019t quite catch that. Could you rephrase?";
-      removeTyping();
-      addMsg('bot', msg);
-    })
-    .catch(function(err) {
-      console.error('[Chatbot] REST error:', err);
-      removeTyping();
-      addMsg('bot', '\u26a0\ufe0f Unable to reach the server. Please try again.');
-    })
-    .finally(function() {
-      setSendDisabled(false);
-    });
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        var msg = data.bot_response || data.text || data.message || "I didn\u2019t quite catch that. Could you rephrase?";
+        removeTyping();
+        addMsg('bot', msg);
+      })
+      .catch(function (err) {
+        console.error('[Chatbot] REST error:', err);
+        removeTyping();
+        addMsg('bot', '\u26a0\ufe0f Unable to reach the server. Please try again.');
+      })
+      .finally(function () {
+        setSendDisabled(false);
+      });
   }
 
   // ── Streaming chunks ───────────────────────────────────────────────────────
@@ -856,7 +856,7 @@
   function handleStaffJoined(data) {
     var name = data.staff_name || 'Agent';
     addSysMsg(name + ' IS CONNECTING\u2026');
-    setTimeout(function() {
+    setTimeout(function () {
       var msgs = msgList.querySelectorAll('div');
       for (var i = 0; i < msgs.length; i++) {
         if (msgs[i].textContent.indexOf('IS CONNECTING') !== -1) {
@@ -876,7 +876,7 @@
       'padding:12px 16px;border-left:2px solid ' + C_EDGE + ';background:transparent;';
 
     var msg = document.createElement('div');
-    msg.textContent   = data.message;
+    msg.textContent = data.message;
     msg.style.cssText =
       'font-family:"Geist Mono",monospace;font-size:13px;color:' + C_TEXT + ';margin-bottom:10px;';
     row.appendChild(msg);
@@ -884,17 +884,17 @@
     var btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
     var options = data.options || [];
-    options.forEach(function(opt) {
+    options.forEach(function (opt) {
       var b = document.createElement('button');
-      b.textContent   = opt.text.toUpperCase();
+      b.textContent = opt.text.toUpperCase();
       b.style.cssText =
         'all:initial;padding:5px 14px;font-family:"Geist Mono",monospace;' +
         'border:1px solid ' + C_EDGE + ';color:' + C_TEXT + ';' +
         'font-size:9px;font-weight:700;letter-spacing:0.1em;cursor:pointer;' +
         'transition:border-color 0.2s ease,color 0.2s ease;';
-      b.addEventListener('mouseenter', function() { b.style.borderColor = C_WM; b.style.color = C_WM; });
-      b.addEventListener('mouseleave', function() { b.style.borderColor = C_EDGE; b.style.color = C_TEXT; });
-      b.addEventListener('click', function() { handleClosureChoice(opt.id, btns); });
+      b.addEventListener('mouseenter', function () { b.style.borderColor = C_WM; b.style.color = C_WM; });
+      b.addEventListener('mouseleave', function () { b.style.borderColor = C_EDGE; b.style.color = C_TEXT; });
+      b.addEventListener('click', function () { handleClosureChoice(opt.id, btns); });
       btns.appendChild(b);
     });
     row.appendChild(btns);
@@ -923,10 +923,10 @@
   // ── Inactivity ─────────────────────────────────────────────────────────────
   function resetInactivity() {
     if (inactivityTimer) clearTimeout(inactivityTimer);
-    inactivityTimer = setTimeout(function() {
+    inactivityTimer = setTimeout(function () {
       showClosurePrompt({
         message: 'Are you still there?',
-        options: [{ id:'continue', text:'Continue' }, { id:'end', text:'End chat' }]
+        options: [{ id: 'continue', text: 'Continue' }, { id: 'end', text: 'End chat' }]
       });
     }, 450000);
   }
@@ -935,76 +935,76 @@
   function parseMarkdown(text) {
     if (!text) return '';
     var codes = [], inlines = [];
-    var html  = text;
+    var html = text;
 
-    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, function(_, lang, code) {
+    html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, function (_, lang, code) {
       var idx = codes.length;
-      codes.push('<pre><code class="lang-' + (lang||'text') + '">' + esc(code.trim()) + '</code></pre>');
+      codes.push('<pre><code class="lang-' + (lang || 'text') + '">' + esc(code.trim()) + '</code></pre>');
       return '___C' + idx + '___';
     });
-    html = html.replace(/`([^`]+)`/g, function(_, code) {
+    html = html.replace(/`([^`]+)`/g, function (_, code) {
       var idx = inlines.length;
       inlines.push('<code>' + esc(code) + '</code>');
       return '___I' + idx + '___';
     });
 
-    html = html.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    html = html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
-    html = html.replace(/\*([^*]+)\*/g,'<em>$1</em>');
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-    html = html.replace(/^### (.+)$/gm,'<h3>$1</h3>');
-    html = html.replace(/^## (.+)$/gm,'<h2>$1</h2>');
-    html = html.replace(/^# (.+)$/gm,'<h1>$1</h1>');
-    html = html.replace(/(?:^[*\-] .+$\n?)+/gm, function(m) {
-      return '<ul>' + m.trim().split('\n').map(function(l){ return '<li>' + l.replace(/^[*\-] /,'') + '</li>'; }).join('') + '</ul>';
+    html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+    html = html.replace(/(?:^[*\-] .+$\n?)+/gm, function (m) {
+      return '<ul>' + m.trim().split('\n').map(function (l) { return '<li>' + l.replace(/^[*\-] /, '') + '</li>'; }).join('') + '</ul>';
     });
-    html = html.replace(/(?:^\d+\. .+$\n?)+/gm, function(m) {
-      return '<ol>' + m.trim().split('\n').map(function(l){ return '<li>' + l.replace(/^\d+\. /,'') + '</li>'; }).join('') + '</ol>';
+    html = html.replace(/(?:^\d+\. .+$\n?)+/gm, function (m) {
+      return '<ol>' + m.trim().split('\n').map(function (l) { return '<li>' + l.replace(/^\d+\. /, '') + '</li>'; }).join('') + '</ol>';
     });
-    html = html.split(/\n\n+/).map(function(p) {
+    html = html.split(/\n\n+/).map(function (p) {
       p = p.trim();
       if (!p || /^<(h[123]|ul|ol|pre)/.test(p) || /^___/.test(p)) return p;
-      return '<p>' + p.replace(/\n/g,'<br>') + '</p>';
+      return '<p>' + p.replace(/\n/g, '<br>') + '</p>';
     }).join('');
 
-    codes.forEach(function(b,i)   { html = html.replace('___C'+i+'___', b); });
-    inlines.forEach(function(c,i) { html = html.replace('___I'+i+'___', c); });
+    codes.forEach(function (b, i) { html = html.replace('___C' + i + '___', b); });
+    inlines.forEach(function (c, i) { html = html.replace('___I' + i + '___', c); });
     return html;
   }
 
   function applyMdStyles(el) {
     var pres = el.querySelectorAll('pre');
-    for (var i=0;i<pres.length;i++) pres[i].style.cssText='background:' + C_VOID + ';color:' + C_TEXT + ';padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.5;border:1px solid ' + C_EDGE + ';';
+    for (var i = 0; i < pres.length; i++) pres[i].style.cssText = 'background:' + C_VOID + ';color:' + C_TEXT + ';padding:12px;border-radius:6px;overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.5;border:1px solid ' + C_EDGE + ';';
     var codes = el.querySelectorAll('code:not(pre code)');
-    for (var i=0;i<codes.length;i++) codes[i].style.cssText='background:' + C_SURFACE + ';color:' + C_WM + ';padding:2px 5px;border-radius:3px;font-size:12px;font-family:"Geist Mono",monospace;';
+    for (var i = 0; i < codes.length; i++) codes[i].style.cssText = 'background:' + C_SURFACE + ';color:' + C_WM + ';padding:2px 5px;border-radius:3px;font-size:12px;font-family:"Geist Mono",monospace;';
     var lists = el.querySelectorAll('ul,ol');
-    for (var i=0;i<lists.length;i++) lists[i].style.cssText='margin:6px 0;padding-left:18px;';
+    for (var i = 0; i < lists.length; i++) lists[i].style.cssText = 'margin:6px 0;padding-left:18px;';
     var links = el.querySelectorAll('a');
-    for (var i=0;i<links.length;i++) links[i].style.cssText='color:' + C_TEXT + ';text-decoration:underline;';
+    for (var i = 0; i < links.length; i++) links[i].style.cssText = 'color:' + C_TEXT + ';text-decoration:underline;';
     var hdrs = el.querySelectorAll('h1,h2,h3');
-    for (var i=0;i<hdrs.length;i++) hdrs[i].style.cssText='margin:6px 0;font-weight:700;font-family:"Geist Mono",monospace;';
+    for (var i = 0; i < hdrs.length; i++) hdrs[i].style.cssText = 'margin:6px 0;font-weight:700;font-family:"Geist Mono",monospace;';
     var ps = el.querySelectorAll('p');
-    for (var i=0;i<ps.length;i++) ps[i].style.cssText='margin:4px 0;';
+    for (var i = 0; i < ps.length; i++) ps[i].style.cssText = 'margin:4px 0;';
   }
 
-  function esc(t) { var d=document.createElement('div'); d.textContent=t; return d.innerHTML; }
+  function esc(t) { var d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
 
   // ── Global styles ──────────────────────────────────────────────────────────
   function injectStyles() {
     if (document.getElementById('cb-global-styles')) return;
 
     // Load Geist Mono from Google Fonts
-    var link  = document.createElement('link');
-    link.rel  = 'preconnect';
+    var link = document.createElement('link');
+    link.rel = 'preconnect';
     link.href = 'https://fonts.googleapis.com';
     document.head.appendChild(link);
-    var link2       = document.createElement('link');
-    link2.rel       = 'stylesheet';
-    link2.href      = 'https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap';
+    var link2 = document.createElement('link');
+    link2.rel = 'stylesheet';
+    link2.href = 'https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap';
     document.head.appendChild(link2);
 
-    var s    = document.createElement('style');
-    s.id     = 'cb-global-styles';
+    var s = document.createElement('style');
+    s.id = 'cb-global-styles';
     s.textContent =
       '@keyframes cb-blink{0%,100%{opacity:1}50%{opacity:0}}' +
       '@keyframes cb-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}' +
@@ -1015,9 +1015,9 @@
       '#cb-suggestions div:focus{outline:none}' +
       'textarea::-webkit-scrollbar{display:none}' +
       '@media(max-width:480px){' +
-        '#cb-root{position:fixed!important;top:0!important;left:0!important;' +
-        'right:0!important;bottom:0!important;width:100%!important;' +
-        'height:100%!important;border-radius:0!important;border:none!important;}' +
+      '#cb-root{position:fixed!important;top:0!important;left:0!important;' +
+      'right:0!important;bottom:0!important;width:100%!important;' +
+      'height:100%!important;border-radius:0!important;border:none!important;}' +
       '}';
     document.head.appendChild(s);
   }
@@ -1025,20 +1025,20 @@
   // ── Color helpers (kept for parseMarkdown/applyMdStyles compatibility) ─────
   function darken(hex, amount) {
     try {
-      var r = Math.max(0, parseInt(hex.slice(1,3),16) - amount);
-      var g = Math.max(0, parseInt(hex.slice(3,5),16) - amount);
-      var b = Math.max(0, parseInt(hex.slice(5,7),16) - amount);
-      return '#' + r.toString(16).padStart(2,'0') + g.toString(16).padStart(2,'0') + b.toString(16).padStart(2,'0');
-    } catch(e) { return hex; }
+      var r = Math.max(0, parseInt(hex.slice(1, 3), 16) - amount);
+      var g = Math.max(0, parseInt(hex.slice(3, 5), 16) - amount);
+      var b = Math.max(0, parseInt(hex.slice(5, 7), 16) - amount);
+      return '#' + r.toString(16).padStart(2, '0') + g.toString(16).padStart(2, '0') + b.toString(16).padStart(2, '0');
+    } catch (e) { return hex; }
   }
 
   function rgba(hex, a) {
     try {
-      var r = parseInt(hex.slice(1,3),16);
-      var g = parseInt(hex.slice(3,5),16);
-      var b = parseInt(hex.slice(5,7),16);
-      return 'rgba('+r+','+g+','+b+','+a+')';
-    } catch(e) { return hex; }
+      var r = parseInt(hex.slice(1, 3), 16);
+      var g = parseInt(hex.slice(3, 5), 16);
+      var b = parseInt(hex.slice(5, 7), 16);
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
+    } catch (e) { return hex; }
   }
 
   // ── Icons (removed — text characters used instead) ────────────────────────
@@ -1048,7 +1048,7 @@
   // → stored in Supabase. Browser messages are then cleared.
   function generateInsight() {
     if (!sessionId || msgQueue.length < 2) return;
-    var messages = msgQueue.map(function(m) {
+    var messages = msgQueue.map(function (m) {
       return { role: m.who === 'user' ? 'user' : 'assistant', content: m.text };
     });
     var payload = JSON.stringify({ session_id: sessionId, tenant_id: TENANT_ID, messages: messages });
@@ -1060,20 +1060,20 @@
       headers: { 'Content-Type': 'application/json' },
       body: payload,
       keepalive: true,
-    }).catch(function() {});
+    }).catch(function () { });
     msgQueue = []; // clear browser messages — session is over
     sessionId = null;
   }
 
   // ── Cleanup ────────────────────────────────────────────────────────────────
-  window.addEventListener('beforeunload', function() {
+  window.addEventListener('beforeunload', function () {
     // Disconnect WS first (needs sessionId), then generate insight (nulls sessionId)
     if (ws && ws.readyState === WebSocket.OPEN) {
       isDisconnecting = true;
-      try { ws.send(JSON.stringify({ type: 'disconnect', session_id: sessionId, tenant_id: TENANT_ID, reason: 'page_unload' })); } catch(e) {}
+      try { ws.send(JSON.stringify({ type: 'disconnect', session_id: sessionId, tenant_id: TENANT_ID, reason: 'page_unload' })); } catch (e) { }
       ws.close();
     }
-    if (wsPingInterval)  clearInterval(wsPingInterval);
+    if (wsPingInterval) clearInterval(wsPingInterval);
     if (inactivityTimer) clearTimeout(inactivityTimer);
     generateInsight(); // fire after WS is closed — keepalive fetch survives page unload
   });
