@@ -27,40 +27,87 @@
   var launcher = null;
   var isVisible = false;
 
-  // ── Launcher button (fixed, bottom-right) ────────────────────────────────
+  // ── Design tokens (must match widget.js) ─────────────────────────────────
+  var C_PANEL  = '#141416';
+  var C_EDGE   = '#2A2A2E';
+  var C_DIM    = '#5A5A62';
+  var C_VOID   = '#0C0C0E';
+  var C_WM     = CFG.primaryColor || '#f97316';
+
+  // ── Launcher button (fixed, bottom-right) — matches widget.js WM brand ──
   function createLauncher() {
-    if (document.getElementById('__cb-launcher')) return;
+    if (document.getElementById('__cb-launcher-wrap')) return;
+
+    // Inject Geist Mono font + blink keyframe once
+    if (!document.getElementById('__cb-loader-styles')) {
+      var lnk = document.createElement('link');
+      lnk.rel = 'stylesheet';
+      lnk.href = 'https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap';
+      document.head.appendChild(lnk);
+
+      var sty = document.createElement('style');
+      sty.id = '__cb-loader-styles';
+      sty.textContent =
+        '@keyframes __cb-pulse{0%,100%{opacity:1}50%{opacity:.55}}' +
+        '#__cb-launcher-wrap *{box-sizing:border-box;}';
+      document.head.appendChild(sty);
+    }
+
+    var wrap = document.createElement('div');
+    wrap.id = '__cb-launcher-wrap';
+    wrap.style.cssText =
+      'position:fixed;right:28px;bottom:28px;' +
+      'display:flex;flex-direction:column;align-items:center;gap:6px;' +
+      'z-index:999998;font-family:"Geist Mono",monospace;';
 
     launcher = document.createElement('button');
     launcher.id = '__cb-launcher';
-    launcher.setAttribute('aria-label', 'Open support chat');
-    launcher.setAttribute('title', 'Open support chat');
-    launcher.innerHTML =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" ' +
-      'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' +
-      '</svg>';
-
-    var color = CFG.primaryColor || '#0ea5e9';
+    launcher.setAttribute('aria-label', 'Open ' + (CFG.companyName || 'Support') + ' chat');
     launcher.style.cssText =
-      'position:fixed;bottom:22px;right:22px;width:56px;height:56px;' +
-      'border-radius:50%;background:' + color + ';color:#fff;border:none;' +
-      'cursor:pointer;z-index:999998;' +
-      'box-shadow:0 4px 14px rgba(0,0,0,.22);' +
-      'display:flex;align-items:center;justify-content:center;' +
-      'transition:transform .18s,box-shadow .18s;';
+      'all:initial;width:52px;height:52px;border-radius:8px;cursor:pointer;' +
+      'background:' + C_PANEL + ';border:1px solid ' + C_EDGE + ';' +
+      'color:' + C_WM + ';font-family:"Geist Mono",monospace;font-size:14px;font-weight:700;' +
+      'display:flex;align-items:center;justify-content:center;letter-spacing:0.06em;' +
+      'transition:border-color 0.25s ease,background 0.25s ease,color 0.25s ease,letter-spacing 0.25s ease;' +
+      'box-shadow:0 4px 14px rgba(0,0,0,.32);';
+    launcher.textContent = 'WM';
+
+    var label = document.createElement('div');
+    label.id = '__cb-launcher-label';
+    label.textContent = 'ASK';
+    label.style.cssText =
+      'font-family:"Geist Mono",monospace;font-size:8px;font-weight:700;' +
+      'letter-spacing:0.22em;color:' + C_DIM + ';text-transform:uppercase;' +
+      'transition:opacity 0.25s ease;';
 
     launcher.addEventListener('mouseenter', function () {
-      launcher.style.transform = 'scale(1.07)';
-      launcher.style.boxShadow = '0 6px 20px rgba(0,0,0,.28)';
+      if (!isVisible) { launcher.style.borderColor = C_WM; }
+      launcher.style.letterSpacing = '0.12em';
     });
     launcher.addEventListener('mouseleave', function () {
-      launcher.style.transform = 'scale(1)';
-      launcher.style.boxShadow = '0 4px 14px rgba(0,0,0,.22)';
+      if (!isVisible) { launcher.style.borderColor = C_EDGE; }
+      launcher.style.letterSpacing = '0.06em';
     });
     launcher.addEventListener('click', toggle);
 
-    document.body.appendChild(launcher);
+    wrap.appendChild(launcher);
+    wrap.appendChild(label);
+    document.body.appendChild(wrap);
+  }
+
+  function updateLauncherState(open) {
+    if (!launcher) return;
+    var label = document.getElementById('__cb-launcher-label');
+    if (open) {
+      launcher.style.background    = C_WM;
+      launcher.style.color         = C_VOID;
+      launcher.style.borderColor   = C_WM;
+    } else {
+      launcher.style.background    = C_PANEL;
+      launcher.style.color         = C_WM;
+      launcher.style.borderColor   = C_EDGE;
+    }
+    if (label) label.style.opacity = open ? '0' : '1';
   }
 
   // ── Iframe (lazy-created on first open) ──────────────────────────────────
@@ -75,14 +122,15 @@
     // allow-popups so links can open in new tabs.
     iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
     iframe.style.cssText =
-      'position:fixed;bottom:90px;right:22px;' +
-      'width:380px;height:600px;' +
-      'max-height:calc(100vh - 110px);' +
-      'border:none;border-radius:16px;' +
+      'position:fixed;bottom:96px;right:28px;' +
+      'width:400px;height:580px;' +
+      'max-height:calc(100vh - 120px);' +
+      'border:none;border-radius:10px;' +
+      'border:1px solid #2A2A2E;' +
       'z-index:999997;' +
-      'box-shadow:0 8px 28px rgba(0,0,0,.18);' +
-      'transition:opacity .2s,transform .2s;' +
-      'opacity:0;transform:translateY(8px);' +  // start hidden for transition
+      'box-shadow:0 8px 28px rgba(0,0,0,.32);' +
+      'transition:opacity .25s cubic-bezier(0.16,1,0.3,1),transform .25s cubic-bezier(0.16,1,0.3,1);' +
+      'opacity:0;transform:translateY(8px);' +
       'display:block;';
 
     document.body.appendChild(iframe);
@@ -127,8 +175,7 @@
       });
     }
     isVisible = true;
-    // Hide launcher bubble while chat is open
-    if (launcher) launcher.style.display = 'none';
+    updateLauncherState(true);
   }
 
   function hide() {
@@ -137,11 +184,10 @@
       iframe.style.transform = 'translateY(8px)';
       setTimeout(function () {
         if (iframe) iframe.style.display = 'none';
-      }, 200);
+      }, 250);
     }
     isVisible = false;
-    // Show launcher bubble again
-    if (launcher) launcher.style.display = 'flex';
+    updateLauncherState(false);
   }
 
   function toggle() {
